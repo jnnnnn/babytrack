@@ -4,10 +4,24 @@
 
 - **Realtime sync**: Multiple clients viewing same baby see updates instantly
 - **Offline-first**: Frontend works offline, syncs when connected
-- **Multi-device**: Phone, tablet, partner's phone, nurse station
-- **Simple auth**: Magic link (email) - no passwords
+- **Multi-device**: Phone, tablet, partner's phone
+- **Admin UI**: Jane (consultant) manages clients, views summaries, generates access links
+- **Link-based access**: Clients get shareable links from Jane (no self-signup)
 - **Self-hosted**: Single Go binary + SQLite, runs on fly.io
 - **Low resource**: Should run on smallest fly.io instance (256MB)
+
+## Users
+
+**Jane (Admin)**
+- Logs in with password
+- Creates/manages client families
+- Generates time-limited access links
+- Views hourly/daily summaries for all clients
+
+**Clients (Parents/Carers)**
+- Access via link from Jane
+- Track baby events in realtime
+- No login required (link = auth)
 
 ## Architecture
 
@@ -31,35 +45,40 @@
 ## Data Model
 
 ```sql
-CREATE TABLE families (
-  id TEXT PRIMARY KEY,           -- 8-char random (url-safe)
-  name TEXT,                     -- "Baby Smith"
+-- Admin user (Jane)
+CREATE TABLE admins (
+  id TEXT PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,   -- bcrypt
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE members (
-  id TEXT PRIMARY KEY,
+-- Client families
+CREATE TABLE families (
+  id TEXT PRIMARY KEY,           -- 8-char random (url-safe)
+  name TEXT NOT NULL,            -- "Baby Smith" or parent name
+  notes TEXT,                    -- Jane's notes about client
+  created_at INTEGER NOT NULL,
+  archived INTEGER DEFAULT 0     -- soft delete when engagement ends
+);
+
+-- Access links (replaces magic_links + members)
+CREATE TABLE access_links (
+  token TEXT PRIMARY KEY,        -- 32-char random (the shareable link)
   family_id TEXT NOT NULL REFERENCES families(id),
-  email TEXT NOT NULL,
-  name TEXT,                     -- "Dad", "Mum", "Nurse Jane"
-  created_at INTEGER NOT NULL,
-  UNIQUE(family_id, email)
+  label TEXT,                    -- "Mum's phone", "Dad", "Grandma"
+  expires_at INTEGER,            -- NULL = never expires
+  created_at INTEGER NOT NULL
 );
 
-CREATE TABLE magic_links (
-  token TEXT PRIMARY KEY,        -- 32-char random
-  member_id TEXT NOT NULL REFERENCES members(id),
-  expires_at INTEGER NOT NULL,
-  used INTEGER DEFAULT 0
-);
-
-CREATE TABLE sessions (
-  token TEXT PRIMARY KEY,        -- 32-char random  
-  member_id TEXT NOT NULL REFERENCES members(id),
-  created_at INTEGER NOT NULL,
+-- Admin sessions
+CREATE TABLE admin_sessions (
+  token TEXT PRIMARY KEY,
+  admin_id TEXT NOT NULL REFERENCES admins(id),
   expires_at INTEGER NOT NULL
 );
 
+-- Tracking entries
 CREATE TABLE entries (
   id TEXT PRIMARY KEY,           -- UUID from client
   family_id TEXT NOT NULL REFERENCES families(id),
@@ -67,10 +86,10 @@ CREATE TABLE entries (
   type TEXT NOT NULL,
   value TEXT NOT NULL,
   deleted INTEGER DEFAULT 0,
-  created_by TEXT REFERENCES members(id),
   updated_at INTEGER NOT NULL    -- for sync ordering
 );
 
+-- Button config per family
 CREATE TABLE configs (
   family_id TEXT PRIMARY KEY REFERENCES families(id),
   data TEXT NOT NULL,            -- JSON blob (buttonGroups)
@@ -79,23 +98,50 @@ CREATE TABLE configs (
 
 CREATE INDEX idx_entries_family ON entries(family_id);
 CREATE INDEX idx_entries_updated ON entries(family_id, updated_at);
+CREATE INDEX idx_entries_ts ON entries(family_id, ts);
 ```
 
 ## API
 
-### HTTP Endpoints
+### Admin Endpoints (cookie auth)
 
 ```
-POST /auth/start
-  Body: { email, family_id? }
-  → Creates family if needed, sends magic link email
-  → Returns { ok: true }
+POST /admin/login
+  Body: { username, password }
+  → Sets admin session cookie
 
-GET /auth/verify?token=xxx
-  → Sets session cookie, redirects to /?family=xxx
-
-POST /auth/logout
+POST /admin/logout
   → Clears session
+
+GET /admin/families
+  → List all families with summary stats
+
+POST /admin/families
+  Body: { name, notes? }
+  → Create new family
+
+GET /admin/families/:id
+  → Family detail with entries
+
+PATCH /admin/families/:id
+  Body: { name?, notes?, archived? }
+
+GET /admin/families/:id/summary?date=2026-01-11
+  → Hourly breakdown for date (like export)
+
+POST /admin/families/:id/links
+  Body: { label?, expires_at? }
+  → Generate access link
+
+DELETE /admin/families/:id/links/:token
+  → Revoke link
+```
+
+### Client Endpoints (link token auth)
+
+```
+GET /t/:token
+  → Validate token, set cookie, redirect to app
 
 GET /health
   → { ok: true, version: "1.0.0" }
@@ -126,13 +172,21 @@ GET /ws?family=xxx
 {"type": "ping"}
 ```
 
-## Auth Flow
+## Auth Flows
 
-1. User opens app, enters email
-2. Server creates/finds member, sends magic link
-3. User clicks link → session cookie set
+### Admin (Jane)
+
+1. Jane visits `/admin` → login form
+2. Enters username/password → session cookie set
+3. Redirects to dashboard
+
+### Client (Parents)
+
+1. Jane creates family in admin UI
+2. Jane generates access link, copies/sends to client
+3. Client opens link `/t/abc123...` → cookie set, redirects to app
 4. Cookie used for WebSocket auth
-5. Sessions expire after 30 days
+5. Link can optionally expire (e.g., after 2 weeks of engagement)
 
 ## Sync Strategy
 
@@ -196,11 +250,8 @@ primary_region = "syd"
 
 ```
 DB_PATH=/data/babytrack.db
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=xxx
-SMTP_PASS=xxx
-SMTP_FROM=noreply@babytrack.example.com
+ADMIN_USER=jane
+ADMIN_PASS=xxx              # bcrypt on first run or set hash directly
 BASE_URL=https://babytrackd.fly.dev
 ```
 
@@ -224,19 +275,42 @@ fly ssh sftp get /data/babytrack.db ./backup.db
 
 ```
 server/
-├── main.go           # Entry point, HTTP server
-├── auth.go           # Magic link, sessions
+├── main.go           # Entry point, router
+├── admin.go          # Admin login, family CRUD, summary endpoints
+├── client.go         # Token auth, app serving
 ├── ws.go             # WebSocket hub, broadcast
-├── db.go             # SQLite operations
-├── email.go          # SMTP sending
+├── db.go             # SQLite operations, queries
+├── templates/        # Admin UI HTML templates
+│   ├── login.html
+│   ├── dashboard.html
+│   ├── family.html
+│   └── layout.html
+├── static/           # Admin CSS/JS (minimal)
 ├── Dockerfile
 └── fly.toml
 ```
 
+## Admin UI Pages
+
+### Dashboard (`/admin`)
+- List of active clients (families)
+- Each row: name, last activity, today's sleep total, link to detail
+- "Add Client" button
+- Archived clients toggle
+
+### Client Detail (`/admin/families/:id`)
+- Client name, notes (editable)
+- Access links management (create, copy, revoke)
+- Date picker for summary view
+- Hourly grid (like current export):
+  - Each hour: events that happened
+  - Daily totals: sleep, feeds, wet, dirty
+- Recent activity log
+
 ## Security Considerations
 
-- Magic links expire in 15 minutes
-- Sessions are httpOnly, secure, sameSite=strict
-- Rate limit magic link requests (5/hour/email)
-- WebSocket validates session before upgrade
+- Admin password bcrypt hashed
+- Admin sessions httpOnly, secure, sameSite=strict
+- Access link tokens: 32 chars, cryptographically random
+- Rate limit login attempts
 - No PII in logs
