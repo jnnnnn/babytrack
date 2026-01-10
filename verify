@@ -4,13 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "=== Format ==="
-# TODO: gofmt -w server/
+gofmt -w server/
 
 echo "=== Lint ==="
 # TODO: golangci-lint run ./server/...
 
 echo "=== Test ==="
-# TODO: go test -cover ./server/...
+(cd server && go test -cover ./...)
 
 echo "=== Frontend ==="
 # TODO: run playwright tests against frontend / local backend
