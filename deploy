@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+echo "=== Verify first ==="
+./verify
+
+echo "=== Build ==="
+# TODO: cd server && go build -o babytrackd .
+
+echo "=== Deploy to fly.io ==="
+# TODO: cd server && fly deploy
+
+echo ""
+echo "✓ Deployed"

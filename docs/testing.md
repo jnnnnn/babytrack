@@ -183,26 +183,8 @@ go test -cover ./...
 # Specific package
 go test ./server -v
 
-# Race detector (CI only, slow)
+# Race detector (slow, use sparingly)
 go test -race ./...
-```
-
-## CI Pipeline
-
-```yaml
-# .github/workflows/test.yml
-name: Test
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-      - run: go test -race -coverprofile=coverage.out ./...
-      - run: go tool cover -func=coverage.out
 ```
 
 ## What We Don't Test

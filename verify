@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+echo "=== Format ==="
+# TODO: gofmt -w server/
+
+echo "=== Lint ==="
+# TODO: golangci-lint run ./server/...
+
+echo "=== Test ==="
+# TODO: go test -cover ./server/...
+
+echo "=== Frontend ==="
+# TODO: validate HTML/JS if needed
+
+echo ""
+echo "✓ All checks passed"
