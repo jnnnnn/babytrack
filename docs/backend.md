@@ -309,7 +309,7 @@ server/
 
 ## Security Considerations
 
-- Admin password bcrypt hashed
+- Admin password not hashed in db (slows down testing)
 - Admin sessions httpOnly, secure, sameSite=strict
 - Access link tokens: 32 chars, cryptographically random
 - Rate limit login attempts
