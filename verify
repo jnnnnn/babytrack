@@ -13,7 +13,7 @@ echo "=== Test ==="
 # TODO: go test -cover ./server/...
 
 echo "=== Frontend ==="
-# TODO: validate HTML/JS if needed
+# TODO: run playwright tests against frontend / local backend
 
 echo ""
 echo "✓ All checks passed"
