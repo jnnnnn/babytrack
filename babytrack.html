@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Baby Log</title>
   <script src="https://unpkg.com/d3@7"></script>
+  <script src="sync-client.js"></script>
   <style>
     :root {
       --bg: #f7f7f7;
@@ -766,11 +767,35 @@
       const transaction = db.transaction(['entries'], 'readwrite');
       const objectStore = transaction.objectStore('entries');
       const now = new Date().toISOString();
-      const entry = { type, value, ts, deleted: false, updated: now };
+      
+      // Generate a UUID for sync compatibility
+      const syncId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+        ? crypto.randomUUID() 
+        : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+            const r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+          });
+      
+      const entry = { type, value, ts, deleted: false, updated: now, syncId };
       const request = objectStore.add(entry);
 
       return new Promise((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result); // Returns the new id
+        request.onsuccess = () => {
+          entry.id = request.result; // Set the auto-generated ID
+          
+          // Sync to server if connected
+          if (window.syncClient && window.syncClient.isConnected()) {
+            window.syncClient.sendEntry('add', {
+              id: entry.syncId,
+              ts: new Date(ts).getTime(),
+              type: entry.type,
+              value: entry.value,
+              deleted: entry.deleted
+            });
+          }
+          
+          resolve(request.result);
+        };
         transaction.onerror = () => reject(transaction.error);
       });
     }
@@ -961,7 +986,23 @@
             entry.deleted = shouldDelete;
             entry.updated = new Date().toISOString();
             const updateRequest = objectStore.put(entry);
-            updateRequest.onsuccess = () => resolve(entry);
+            updateRequest.onsuccess = () => {
+              // Sync to server if connected
+              if (window.syncClient && window.syncClient.isConnected() && entry.syncId) {
+                if (shouldDelete) {
+                  window.syncClient.sendEntry('delete', { id: entry.syncId });
+                } else {
+                  window.syncClient.sendEntry('update', {
+                    id: entry.syncId,
+                    ts: new Date(entry.ts).getTime(),
+                    type: entry.type,
+                    value: entry.value,
+                    deleted: entry.deleted
+                  });
+                }
+              }
+              resolve(entry);
+            };
             updateRequest.onerror = () => reject(updateRequest.error);
           } else {
             resolve(null);
@@ -2204,6 +2245,180 @@
 
     // ==================== End JSONBin.io Sync ====================
 
+    // ==================== WebSocket Realtime Sync ====================
+    
+    // Initialize WebSocket sync client
+    function initWebSocketSync() {
+      // Only initialize if SyncClient is available and we have a family parameter
+      if (typeof SyncClient === 'undefined') {
+        console.log('[WS Sync] SyncClient not loaded, skipping WebSocket sync');
+        return;
+      }
+      
+      const params = new URLSearchParams(window.location.search);
+      const familyId = params.get('family');
+      
+      if (!familyId) {
+        console.log('[WS Sync] No family ID in URL, skipping WebSocket sync');
+        return;
+      }
+      
+      console.log('[WS Sync] Initializing WebSocket sync for family:', familyId);
+      
+      window.syncClient = new SyncClient({
+        onConnect: () => {
+          console.log('[WS Sync] Connected');
+          updateWsSyncIndicator('connected');
+        },
+        onDisconnect: () => {
+          console.log('[WS Sync] Disconnected');
+          updateWsSyncIndicator('disconnected');
+        },
+        onInit: async (entries, config) => {
+          console.log('[WS Sync] Received init with', entries.length, 'entries');
+          await mergeRemoteEntries(entries);
+          if (config && Object.keys(config).length > 0) {
+            // Could merge config here if needed
+          }
+          updateDailyReport();
+        },
+        onEntry: async (action, entry) => {
+          console.log('[WS Sync] Received entry:', action, entry);
+          await handleRemoteEntry(action, entry);
+          updateDailyReport();
+        },
+        onPresence: (members) => {
+          console.log('[WS Sync] Presence update:', members);
+          updatePresenceIndicator(members);
+        },
+        onError: (err) => {
+          console.error('[WS Sync] Error:', err);
+        }
+      });
+      
+      window.syncClient.connect();
+    }
+    
+    // Update sync status indicator
+    function updateWsSyncIndicator(status) {
+      let indicator = document.getElementById('ws-sync-indicator');
+      if (!indicator) {
+        // Create indicator if it doesn't exist
+        indicator = document.createElement('div');
+        indicator.id = 'ws-sync-indicator';
+        indicator.style.cssText = 'position: fixed; top: 8px; right: 8px; padding: 4px 8px; border-radius: 4px; font-size: 11px; z-index: 1000;';
+        document.body.appendChild(indicator);
+      }
+      
+      if (status === 'connected') {
+        indicator.textContent = '🟢 Synced';
+        indicator.style.background = '#e8f5e9';
+        indicator.style.color = '#2e7d32';
+      } else {
+        indicator.textContent = '🔴 Offline';
+        indicator.style.background = '#ffebee';
+        indicator.style.color = '#c62828';
+      }
+    }
+    
+    // Update presence indicator to show who's online
+    function updatePresenceIndicator(members) {
+      let indicator = document.getElementById('presence-indicator');
+      if (!indicator) {
+        indicator = document.createElement('div');
+        indicator.id = 'presence-indicator';
+        indicator.style.cssText = 'position: fixed; top: 32px; right: 8px; padding: 4px 8px; border-radius: 4px; font-size: 11px; background: #e3f2fd; color: #1565c0; z-index: 1000;';
+        document.body.appendChild(indicator);
+      }
+      
+      if (members.length > 0) {
+        indicator.textContent = '👥 ' + members.join(', ');
+        indicator.style.display = 'block';
+      } else {
+        indicator.style.display = 'none';
+      }
+    }
+    
+    // Merge remote entries into local IndexedDB
+    async function mergeRemoteEntries(remoteEntries) {
+      if (!db) await initDB();
+      
+      const transaction = db.transaction(['entries'], 'readwrite');
+      const objectStore = transaction.objectStore('entries');
+      
+      for (const remote of remoteEntries) {
+        // Check if we already have this entry by syncId
+        const existingEntries = await new Promise((resolve, reject) => {
+          const request = objectStore.getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        
+        const existing = existingEntries.find(e => e.syncId === remote.id);
+        
+        if (existing) {
+          // Update if remote is newer
+          const remoteUpdated = remote.updated_at || 0;
+          const localUpdated = new Date(existing.updated).getTime();
+          
+          if (remoteUpdated > localUpdated) {
+            existing.ts = new Date(remote.ts).toISOString();
+            existing.type = remote.type;
+            existing.value = remote.value;
+            existing.deleted = remote.deleted;
+            existing.updated = new Date(remoteUpdated).toISOString();
+            objectStore.put(existing);
+          }
+        } else {
+          // Add new entry
+          const newEntry = {
+            syncId: remote.id,
+            ts: new Date(remote.ts).toISOString(),
+            type: remote.type,
+            value: remote.value,
+            deleted: remote.deleted || false,
+            updated: new Date(remote.updated_at || Date.now()).toISOString()
+          };
+          objectStore.add(newEntry);
+        }
+      }
+      
+      return new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      });
+    }
+    
+    // Handle a single remote entry update
+    async function handleRemoteEntry(action, entry) {
+      if (!entry) return;
+      
+      if (action === 'delete') {
+        // Find and mark as deleted
+        if (!db) await initDB();
+        const transaction = db.transaction(['entries'], 'readwrite');
+        const objectStore = transaction.objectStore('entries');
+        
+        const allEntries = await new Promise((resolve, reject) => {
+          const request = objectStore.getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        
+        const existing = allEntries.find(e => e.syncId === entry.id);
+        if (existing && !existing.deleted) {
+          existing.deleted = true;
+          existing.updated = new Date().toISOString();
+          objectStore.put(existing);
+        }
+      } else {
+        // Add or update
+        await mergeRemoteEntries([entry]);
+      }
+    }
+    
+    // ==================== End WebSocket Realtime Sync ====================
+
     // Create emoji lookup map
     const emojiMap = {};
     buttonGroups.forEach((group) => {
@@ -3089,6 +3304,9 @@
 
         // Initialize sync from URL if sync key is present
         initSyncFromUrl();
+        
+        // Initialize WebSocket sync if SyncClient is available
+        initWebSocketSync();
       });
 
       let allDayEntries = []; // Store all entries for filtering
