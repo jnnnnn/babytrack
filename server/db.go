@@ -141,6 +141,16 @@ type AccessLink struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+type Entry struct {
+	ID        string `json:"id"`
+	FamilyID  string `json:"family_id"`
+	Ts        int64  `json:"ts"`
+	Type      string `json:"type"`
+	Value     string `json:"value"`
+	Deleted   bool   `json:"deleted"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 // Admin methods
 
 func (db *DB) EnsureAdmin(username, password string) error {
@@ -350,5 +360,80 @@ func (db *DB) ValidateAccessLink(token string) (*AccessLink, error) {
 
 func (db *DB) DeleteAccessLink(token string) error {
 	_, err := db.Exec("DELETE FROM access_links WHERE token = ?", token)
+	return err
+}
+
+// Entry methods
+
+func (db *DB) GetEntries(familyID string, sinceUpdatedAt int64) ([]Entry, error) {
+	rows, err := db.Query(
+		`SELECT id, family_id, ts, type, value, deleted, updated_at 
+		 FROM entries 
+		 WHERE family_id = ? AND updated_at > ? 
+		 ORDER BY updated_at ASC`,
+		familyID, sinceUpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []Entry
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+func (db *DB) UpsertEntry(e *Entry) error {
+	e.UpdatedAt = time.Now().UnixMilli()
+	_, err := db.Exec(
+		`INSERT INTO entries (id, family_id, ts, type, value, deleted, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   ts = excluded.ts,
+		   type = excluded.type,
+		   value = excluded.value,
+		   deleted = excluded.deleted,
+		   updated_at = excluded.updated_at`,
+		e.ID, e.FamilyID, e.Ts, e.Type, e.Value, e.Deleted, e.UpdatedAt,
+	)
+	return err
+}
+
+func (db *DB) DeleteEntry(familyID, id string) error {
+	now := time.Now().UnixMilli()
+	_, err := db.Exec(
+		"UPDATE entries SET deleted = 1, updated_at = ? WHERE id = ? AND family_id = ?",
+		now, id, familyID,
+	)
+	return err
+}
+
+// Config methods
+
+func (db *DB) GetConfig(familyID string) (string, error) {
+	var data string
+	err := db.QueryRow("SELECT data FROM configs WHERE family_id = ?", familyID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return "{}", nil
+	}
+	return data, err
+}
+
+func (db *DB) SaveConfig(familyID, data string) error {
+	now := time.Now().UnixMilli()
+	_, err := db.Exec(
+		`INSERT INTO configs (family_id, data, updated_at)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(family_id) DO UPDATE SET
+		   data = excluded.data,
+		   updated_at = excluded.updated_at`,
+		familyID, data, now,
+	)
 	return err
 }

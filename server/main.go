@@ -9,7 +9,8 @@ import (
 const version = "0.1.0"
 
 type Server struct {
-	db *DB
+	db  *DB
+	hub *Hub
 }
 
 func main() {
@@ -38,12 +39,13 @@ func main() {
 		}
 	}
 
-	s := &Server{db: db}
+	s := &Server{db: db, hub: NewHub(db)}
 	mux := http.NewServeMux()
 
 	// Public
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /t/{token}", s.handleClientToken)
+	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
 	// Admin auth
 	mux.HandleFunc("POST /admin/login", s.adminLogin)
