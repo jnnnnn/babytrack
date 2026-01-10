@@ -1418,36 +1418,62 @@
         request.onerror = () => reject(request.error);
       });
 
-      if (!allEntries || allEntries.length === 0) return;
+      if (!allEntries || allEntries.length === 0) {
+        // Reset all buttons to default state when no entries
+        buttonGroups.forEach((group) => {
+          group.buttons.forEach((btn) => {
+            const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
+            if (button) updateButtonDisplay(button, btn.label, null, false);
+          });
+        });
+        return;
+      }
 
       // Filter out deleted entries for button states
       const activeEntries = allEntries.filter((e) => !e.deleted);
       if (activeEntries.length === 0) return;
 
-      // Find last feed and update button
-      const lastFeed = [...activeEntries].reverse().find((e) => e.type === 'feed' && e.value === 'bf');
-      const feedBtn = document.querySelector('button[data-type="feed"][data-value="bf"]');
-      const feedTime = lastFeed ? formatElapsedTime(new Date(lastFeed.ts).getTime()) : null;
-      updateButtonDisplay(feedBtn, 'Feed', feedTime, false);
+      // Process each group based on its config
+      buttonGroups.forEach((group) => {
+        const categoryEntries = activeEntries.filter((e) => e.type === group.category);
+        const lastEntry = [...categoryEntries].pop();
 
-      // Find last sleep event and update sleep/awake buttons
-      const lastSleepEvent = [...activeEntries].reverse().find((e) => e.type === 'sleep');
-      const sleepBtn = document.querySelector('button[data-type="sleep"][data-value="sleeping"]');
-      const awakeBtn = document.querySelector('button[data-type="sleep"][data-value="awake"]');
-
-      if (sleepBtn && awakeBtn) {
-        const isAsleep = lastSleepEvent && (lastSleepEvent.value === 'sleeping' || lastSleepEvent.value === 'nap');
-        const sleepTime = lastSleepEvent ? formatElapsedTime(new Date(lastSleepEvent.ts).getTime()) : null;
-
-        if (lastSleepEvent) {
-          updateButtonDisplay(sleepBtn, 'Sleeping', isAsleep ? sleepTime : null, isAsleep);
-          updateButtonDisplay(awakeBtn, 'Awake', !isAsleep ? sleepTime : null, !isAsleep);
-        } else {
-          // No sleep events today - default to awake
-          updateButtonDisplay(sleepBtn, 'Sleeping', null, false);
-          updateButtonDisplay(awakeBtn, 'Awake', null, true);
+        // Handle showTiming: show elapsed time on specific button(s)
+        if (group.showTiming) {
+          const timingValues = Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming];
+          timingValues.forEach((val) => {
+            const lastOfValue = [...categoryEntries].reverse().find((e) => e.value === val);
+            const btn = document.querySelector(`button[data-type="${group.category}"][data-value="${val}"]`);
+            if (btn) {
+              const buttonConfig = group.buttons.find((b) => b.value === val);
+              const elapsed = lastOfValue ? formatElapsedTime(new Date(lastOfValue.ts).getTime()) : null;
+              updateButtonDisplay(btn, buttonConfig?.label || val, elapsed, false);
+            }
+          });
         }
-      }
+
+        // Handle stateful: highlight buttons based on current state
+        if (group.stateful) {
+          const onValues = Array.isArray(group.stateful) ? group.stateful : [group.stateful];
+          const isOn = lastEntry && onValues.includes(lastEntry.value);
+          const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
+
+          group.buttons.forEach((btn) => {
+            const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
+            if (!button) return;
+
+            const isOnButton = onValues.includes(btn.value);
+            if (lastEntry) {
+              // Show timing on the active state button
+              const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
+              updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
+            } else {
+              // No entries - default to "off" state (first non-on button is active)
+              updateButtonDisplay(button, btn.label, null, !isOnButton);
+            }
+          });
+        }
+      });
     }
 
     document.addEventListener('keydown', (e) => {
@@ -1500,6 +1526,8 @@
     const defaultButtonGroups = [
       {
         category: 'feed',
+        showTiming: 'bf',  // Show timing on button with this value
+        countDaily: 'bf',  // Count this value in daily stats
         buttons: [
           { value: 'bf', label: 'Feed', emoji: '🤱' },
           { value: 'play', label: 'Play', emoji: '🎾' },
@@ -1508,6 +1536,7 @@
       },
       {
         category: 'sleep',
+        stateful: ['sleeping', 'nap'],  // These values = "on" state
         buttons: [
           { value: 'sleeping', label: 'Sleeping', emoji: '' },
           { value: 'nap', label: 'Nap', emoji: '' },
@@ -1517,6 +1546,7 @@
       },
       {
         category: 'nappy',
+        countDaily: ['wet', 'dirty'],  // Count each separately
         buttons: [
           { value: 'wet', label: 'Wet', emoji: '💧' },
           { value: 'dirty', label: 'Dirty', emoji: '💩' },
@@ -1600,12 +1630,51 @@
         groupDiv.className = 'config-group';
         groupDiv.dataset.groupIndex = groupIndex;
 
-        // Group header with editable category
+        // Build button value options for selects
+        const buttonOptions = group.buttons.map((b) => 
+          `<option value="${b.value}">${b.label}</option>`
+        ).join('');
+        const buttonOptionsMulti = group.buttons.map((b) => {
+          const selected = Array.isArray(group.stateful) && group.stateful.includes(b.value) ? 'selected' : '';
+          return `<option value="${b.value}" ${selected}>${b.label}</option>`;
+        }).join('');
+
+        // Group header with editable category and behavior options
         groupDiv.innerHTML = `
                         <div class="config-group-header">
                             <label>Category: <input type="text" value="${group.category}" placeholder="category" 
                                    onchange="updateGroupCategory(${groupIndex}, this.value)" style="width: 100px;"></label>
                             <button class="add-btn" onclick="addButtonToGroup(${groupIndex})">+ Add Button</button>
+                        </div>
+                        <div class="config-options" style="display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; font-size: 12px;">
+                            <label title="Show elapsed time on button">
+                                ⏱️ Timing: 
+                                <select onchange="updateGroupOption(${groupIndex}, 'showTiming', this.value)">
+                                    <option value="">None</option>
+                                    ${group.buttons.map((b) => 
+                                      `<option value="${b.value}" ${group.showTiming === b.value ? 'selected' : ''}>${b.label}</option>`
+                                    ).join('')}
+                                </select>
+                            </label>
+                            <label title="Track on/off state with highlighting">
+                                🔘 Stateful: 
+                                <select multiple size="2" onchange="updateGroupOptionMulti(${groupIndex}, 'stateful', this)" style="height: 40px;">
+                                    ${group.buttons.map((b) => {
+                                      const sel = (Array.isArray(group.stateful) && group.stateful.includes(b.value)) ? 'selected' : '';
+                                      return `<option value="${b.value}" ${sel}>${b.label}</option>`;
+                                    }).join('')}
+                                </select>
+                            </label>
+                            <label title="Count in daily stats">
+                                📊 Count: 
+                                <select multiple size="2" onchange="updateGroupOptionMulti(${groupIndex}, 'countDaily', this)" style="height: 40px;">
+                                    ${group.buttons.map((b) => {
+                                      const vals = Array.isArray(group.countDaily) ? group.countDaily : (group.countDaily ? [group.countDaily] : []);
+                                      const sel = vals.includes(b.value) ? 'selected' : '';
+                                      return `<option value="${b.value}" ${sel}>${b.label}</option>`;
+                                    }).join('')}
+                                </select>
+                            </label>
                         </div>
                         <div class="config-buttons" data-group="${groupIndex}"></div>
                     `;
@@ -1652,6 +1721,23 @@
 
     function updateGroupCategory(groupIndex, value) {
       buttonGroups[groupIndex].category = value;
+    }
+
+    function updateGroupOption(groupIndex, option, value) {
+      if (value === '') {
+        delete buttonGroups[groupIndex][option];
+      } else {
+        buttonGroups[groupIndex][option] = value;
+      }
+    }
+
+    function updateGroupOptionMulti(groupIndex, option, selectEl) {
+      const selected = Array.from(selectEl.selectedOptions).map((o) => o.value);
+      if (selected.length === 0) {
+        delete buttonGroups[groupIndex][option];
+      } else {
+        buttonGroups[groupIndex][option] = selected;
+      }
     }
 
     function addButtonToGroup(groupIndex) {
@@ -2204,29 +2290,33 @@
       // Get day boundaries for clipping sleep periods
       const { dayStart, dayEnd } = getDayBoundsAsDate(currentReportDate);
 
-      // Only count feeds and nappies that occurred within the day
-      const feedEvents = entries.filter((e) => {
-        return e.type === 'feed' && e.value === 'bf' && isEntryInDay(e, dayStart, dayEnd);
+      // Build dynamic counts based on group config
+      const counts = {};
+      buttonGroups.forEach((group) => {
+        if (group.countDaily) {
+          const values = Array.isArray(group.countDaily) ? group.countDaily : [group.countDaily];
+          values.forEach((val) => {
+            const count = entries.filter((e) => {
+              return e.type === group.category && e.value === val && isEntryInDay(e, dayStart, dayEnd);
+            }).length;
+            counts[`${group.category}-${val}`] = {
+              count,
+              label: group.buttons.find((b) => b.value === val)?.label || val,
+              category: group.category,
+              value: val,
+            };
+          });
+        }
       });
-
-      const wetCount = entries.filter((e) => {
-        return e.type === 'nappy' && e.value === 'wet' && isEntryInDay(e, dayStart, dayEnd);
-      }).length;
-
-      const dirtyCount = entries.filter((e) => {
-        return e.type === 'nappy' && e.value === 'dirty' && isEntryInDay(e, dayStart, dayEnd);
-      }).length;
 
       let totalSleepMinutes = 0;
       let currentSleepStart = null;
 
-      // Check if day starts during a sleep period
-      // Find the most recent sleep event before dayStart
+      // Check if day starts during a sleep period (sleep graph is special-cased)
       const eventsBeforeDay = sleepEvents.filter((e) => new Date(e.ts) < dayStart);
       if (eventsBeforeDay.length > 0) {
         const lastEventBeforeDay = eventsBeforeDay[eventsBeforeDay.length - 1];
         if (lastEventBeforeDay.value === 'sleeping' || lastEventBeforeDay.value === 'nap') {
-          // Day starts during sleep
           currentSleepStart = new Date(lastEventBeforeDay.ts);
         }
       }
@@ -2280,39 +2370,55 @@
 
       return {
         totalSleep: `${hours}h ${minutes}m`,
-        feedCount: feedEvents.length,
-        wetCount: wetCount,
-        dirtyCount: dirtyCount,
+        counts, // Dynamic counts from config
       };
     }
 
     function updateStatsDisplay(stats) {
-      // Use D3 for animated stat updates
+      // Build stat data dynamically from config
       const statData = [
         {
           id: 'stat-sleep',
           value: stats.totalSleep,
           label: 'Total Sleep',
         },
-        {
-          id: 'stat-feeds',
-          value: stats.feedCount,
-          label: 'Feeds',
-          isNumeric: true,
-        },
-        {
-          id: 'stat-wet',
-          value: stats.wetCount,
-          label: 'Wet Nappies',
-          isNumeric: true,
-        },
-        {
-          id: 'stat-dirty',
-          value: stats.dirtyCount,
-          label: 'Dirty Nappies',
-          isNumeric: true,
-        },
       ];
+
+      // Add dynamic counts from config
+      Object.entries(stats.counts).forEach(([key, data]) => {
+        statData.push({
+          id: `stat-${key}`,
+          value: data.count,
+          label: data.label,
+          isNumeric: true,
+        });
+      });
+
+      // Ensure stats grid has correct elements
+      const statsGrid = document.querySelector('.stats-grid');
+      if (statsGrid) {
+        // Create missing stat cards
+        statData.forEach((stat) => {
+          if (!document.getElementById(stat.id)) {
+            const card = document.createElement('div');
+            card.className = 'stat-card';
+            card.innerHTML = `
+              <div class="label">${stat.label}</div>
+              <div class="value" id="${stat.id}">0</div>
+            `;
+            statsGrid.appendChild(card);
+          }
+        });
+
+        // Remove stat cards that are no longer in config
+        const validIds = new Set(statData.map((s) => s.id));
+        Array.from(statsGrid.querySelectorAll('.stat-card')).forEach((card) => {
+          const valueEl = card.querySelector('.value');
+          if (valueEl && !validIds.has(valueEl.id)) {
+            card.remove();
+          }
+        });
+      }
 
       statData.forEach((stat) => {
         const element = d3.select(`#${stat.id}`);
@@ -2901,18 +3007,7 @@
                 <div class="label">Total Sleep</div>
                 <div class="value" id="stat-sleep">0h 0m</div>
               </div>
-              <div class="stat-card">
-                <div class="label">Feeds</div>
-                <div class="value" id="stat-feeds">0</div>
-              </div>
-              <div class="stat-card">
-                <div class="label">Wet Nappies</div>
-                <div class="value" id="stat-wet">0</div>
-              </div>
-              <div class="stat-card">
-                <div class="label">Dirty Nappies</div>
-                <div class="value" id="stat-dirty">0</div>
-              </div>
+              <!-- Dynamic stat cards added by JS based on config -->
             </div>
 
             <h4 style="font-size: 14px; margin: 16px 0 8px 0; color: var(--text-muted)">Hourly Activity</h4>
