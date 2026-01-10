@@ -227,3 +227,41 @@ func TestHubBroadcast(t *testing.T) {
 		// expected
 	}
 }
+
+func TestIncrementalSync(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	family, _ := db.CreateFamily("Test Baby", "")
+
+	// Create some entries with different timestamps
+	entry1 := &Entry{ID: "entry-1", FamilyID: family.ID, Ts: 1000, Type: "feed", Value: "bottle"}
+	entry2 := &Entry{ID: "entry-2", FamilyID: family.ID, Ts: 2000, Type: "sleep", Value: "nap"}
+	db.UpsertEntry(entry1)
+	time.Sleep(10 * time.Millisecond) // ensure different updated_at
+	db.UpsertEntry(entry2)
+
+	// Get entries since entry1's update time
+	entries, err := db.GetEntries(family.ID, entry1.UpdatedAt)
+	if err != nil {
+		t.Fatalf("failed to get entries: %v", err)
+	}
+
+	// Should only get entry2
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(entries))
+	}
+	if len(entries) > 0 && entries[0].ID != "entry-2" {
+		t.Errorf("expected entry-2, got %s", entries[0].ID)
+	}
+
+	// Get all entries
+	allEntries, _ := db.GetEntries(family.ID, 0)
+	if len(allEntries) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(allEntries))
+	}
+}

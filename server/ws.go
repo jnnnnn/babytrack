@@ -108,11 +108,13 @@ func (h *Hub) broadcastPresenceLocked(familyID string) {
 
 // WebSocket message types
 type WSMessage struct {
-	Type   string          `json:"type"`
-	Action string          `json:"action,omitempty"`
-	Entry  json.RawMessage `json:"entry,omitempty"`
-	ID     string          `json:"id,omitempty"`
-	Data   json.RawMessage `json:"data,omitempty"`
+	Type        string          `json:"type"`
+	Action      string          `json:"action,omitempty"`
+	Entry       json.RawMessage `json:"entry,omitempty"`
+	Entries     json.RawMessage `json:"entries,omitempty"` // for bulk sync
+	ID          string          `json:"id,omitempty"`
+	Data        json.RawMessage `json:"data,omitempty"`
+	SinceUpdate int64           `json:"since_update,omitempty"` // for incremental sync
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +186,8 @@ func (c *Client) readPump(s *Server) {
 		switch msg.Type {
 		case "entry":
 			s.handleEntryMessage(c, msg)
+		case "sync":
+			s.handleSyncMessage(c, msg)
 		case "config":
 			s.handleConfigMessage(c, msg)
 		case "ping":
@@ -250,4 +254,45 @@ func (s *Server) handleConfigMessage(c *Client, msg WSMessage) {
 		"data": msg.Data,
 	})
 	s.hub.Broadcast(c.familyID, broadcast, c)
+}
+
+// handleSyncMessage handles incremental sync requests from clients
+// Client sends: {"type": "sync", "since_update": 1234567890, "entries": [...]}
+// Server responds with entries newer than since_update
+// Server also processes any entries the client sends
+func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
+	// First, process any entries the client is sending
+	if len(msg.Entries) > 0 {
+		var clientEntries []Entry
+		if err := json.Unmarshal(msg.Entries, &clientEntries); err == nil {
+			for _, e := range clientEntries {
+				e.FamilyID = c.familyID
+				if err := s.db.UpsertEntry(&e); err != nil {
+					log.Printf("failed to upsert sync entry: %v", err)
+					continue
+				}
+
+				// Broadcast to other clients
+				broadcast, _ := json.Marshal(map[string]any{
+					"type":   "entry",
+					"action": "add",
+					"entry":  e,
+				})
+				s.hub.Broadcast(c.familyID, broadcast, c)
+			}
+		}
+	}
+
+	// Then send server entries newer than client's last update
+	entries, err := s.db.GetEntries(c.familyID, msg.SinceUpdate)
+	if err != nil {
+		log.Printf("failed to get entries for sync: %v", err)
+		return
+	}
+
+	resp, _ := json.Marshal(map[string]any{
+		"type":    "sync",
+		"entries": entries,
+	})
+	c.send <- resp
 }
