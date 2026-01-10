@@ -92,6 +92,13 @@ func (s *Server) adminRequired(next http.HandlerFunc) http.HandlerFunc {
 
 // Family handlers
 
+type FamilyWithStats struct {
+	Family
+	EntryCount     int   `json:"entry_count"`
+	LatestActivity int64 `json:"latest_activity"`
+	LinkCount      int   `json:"link_count"`
+}
+
 func (s *Server) listFamilies(w http.ResponseWriter, r *http.Request) {
 	families, err := s.db.ListFamilies(r.URL.Query().Get("archived") == "true")
 	if err != nil {
@@ -99,8 +106,17 @@ func (s *Server) listFamilies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enrich with stats
+	result := make([]FamilyWithStats, len(families))
+	for i, f := range families {
+		result[i].Family = f
+		result[i].EntryCount, _ = s.db.GetEntryCount(f.ID)
+		result[i].LatestActivity, _ = s.db.GetLatestActivity(f.ID)
+		result[i].LinkCount, _ = s.db.GetLinkCount(f.ID)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(families)
+	json.NewEncoder(w).Encode(result)
 }
 
 func (s *Server) createFamily(w http.ResponseWriter, r *http.Request) {
@@ -243,4 +259,90 @@ func generateToken(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// Summary handler
+
+type HourlySummary struct {
+	Hour    int            `json:"hour"`
+	Entries []EntrySummary `json:"entries"`
+}
+
+type EntrySummary struct {
+	Time  string `json:"time"`
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+type DailySummary struct {
+	Date   string          `json:"date"`
+	Hours  []HourlySummary `json:"hours"`
+	Totals map[string]int  `json:"totals"`
+}
+
+func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
+	familyID := r.PathValue("id")
+	dateStr := r.URL.Query().Get("date")
+
+	// Parse date (default to today)
+	var startTime time.Time
+	if dateStr != "" {
+		parsed, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			http.Error(w, "invalid date format (use YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		startTime = parsed
+	} else {
+		now := time.Now()
+		startTime = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	}
+
+	endTime := startTime.Add(24 * time.Hour)
+	startMs := startTime.UnixMilli()
+	endMs := endTime.UnixMilli()
+
+	entries, err := s.db.GetEntriesForDate(familyID, startMs, endMs)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Group by hour
+	hourlyMap := make(map[int][]EntrySummary)
+	totals := make(map[string]int)
+
+	for _, e := range entries {
+		t := time.UnixMilli(e.Ts)
+		hour := t.Hour()
+
+		hourlyMap[hour] = append(hourlyMap[hour], EntrySummary{
+			Time:  t.Format("15:04"),
+			Type:  e.Type,
+			Value: e.Value,
+		})
+
+		// Count by type
+		totals[e.Type]++
+	}
+
+	// Build hours array (only hours with data)
+	var hours []HourlySummary
+	for h := 0; h < 24; h++ {
+		if entries, ok := hourlyMap[h]; ok {
+			hours = append(hours, HourlySummary{
+				Hour:    h,
+				Entries: entries,
+			})
+		}
+	}
+
+	summary := DailySummary{
+		Date:   startTime.Format("2006-01-02"),
+		Hours:  hours,
+		Totals: totals,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(summary)
 }

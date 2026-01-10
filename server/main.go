@@ -42,6 +42,11 @@ func main() {
 	s := &Server{db: db, hub: NewHub(db)}
 	mux := http.NewServeMux()
 
+	// Static files
+	mux.HandleFunc("GET /admin", serveFile("admin.html"))
+	mux.HandleFunc("GET /", serveFile("babytrack.html"))
+	mux.HandleFunc("GET /sync-client.js", serveFile("sync-client.js"))
+
 	// Public
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /t/{token}", s.handleClientToken)
@@ -56,6 +61,7 @@ func main() {
 	mux.HandleFunc("POST /admin/families", s.adminRequired(s.createFamily))
 	mux.HandleFunc("GET /admin/families/{id}", s.adminRequired(s.getFamily))
 	mux.HandleFunc("PATCH /admin/families/{id}", s.adminRequired(s.updateFamily))
+	mux.HandleFunc("GET /admin/families/{id}/summary", s.adminRequired(s.getFamilySummary))
 	mux.HandleFunc("GET /admin/families/{id}/links", s.adminRequired(s.listAccessLinks))
 	mux.HandleFunc("POST /admin/families/{id}/links", s.adminRequired(s.createAccessLink))
 	mux.HandleFunc("DELETE /admin/families/{id}/links/{token}", s.adminRequired(s.deleteAccessLink))
@@ -69,4 +75,10 @@ func main() {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true,"version":"` + version + `"}`))
+}
+
+func serveFile(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "../"+name)
+	}
 }

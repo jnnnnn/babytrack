@@ -437,3 +437,65 @@ func (db *DB) SaveConfig(familyID, data string) error {
 	)
 	return err
 }
+
+// GetEntriesForDate returns all non-deleted entries for a family within a date range
+func (db *DB) GetEntriesForDate(familyID string, startMs, endMs int64) ([]Entry, error) {
+	rows, err := db.Query(
+		`SELECT id, family_id, ts, type, value, deleted, updated_at 
+		 FROM entries 
+		 WHERE family_id = ? AND ts >= ? AND ts < ? AND deleted = 0
+		 ORDER BY ts ASC`,
+		familyID, startMs, endMs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []Entry
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// GetLatestActivity returns the most recent entry timestamp for a family
+func (db *DB) GetLatestActivity(familyID string) (int64, error) {
+	var ts sql.NullInt64
+	err := db.QueryRow(
+		"SELECT MAX(ts) FROM entries WHERE family_id = ? AND deleted = 0",
+		familyID,
+	).Scan(&ts)
+	if err != nil {
+		return 0, err
+	}
+	if !ts.Valid {
+		return 0, nil
+	}
+	return ts.Int64, nil
+}
+
+// GetEntryCount returns total entry count for a family
+func (db *DB) GetEntryCount(familyID string) (int, error) {
+	var count int
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM entries WHERE family_id = ? AND deleted = 0",
+		familyID,
+	).Scan(&count)
+	return count, err
+}
+
+// GetLinkCount returns total active link count for a family
+func (db *DB) GetLinkCount(familyID string) (int, error) {
+	var count int
+	now := time.Now().UnixMilli()
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM access_links WHERE family_id = ? AND (expires_at IS NULL OR expires_at > ?)",
+		familyID, now,
+	).Scan(&count)
+	return count, err
+}

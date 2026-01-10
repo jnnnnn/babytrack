@@ -12,8 +12,9 @@ echo "=== Lint ==="
 echo "=== Test ==="
 (cd server && go test -cover ./...)
 
-echo "=== Frontend ==="
-# TODO: run playwright tests against frontend / local backend
+echo "=== E2E ==="
+rm -f server/babytrack.db  # Clean DB for reproducible tests
+npx playwright test
 
 echo ""
 echo "✓ All checks passed"
