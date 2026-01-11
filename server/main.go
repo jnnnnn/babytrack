@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 )
@@ -14,6 +14,8 @@ type Server struct {
 }
 
 func main() {
+	initLogger()
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -26,7 +28,8 @@ func main() {
 
 	db, err := NewDB(dbPath)
 	if err != nil {
-		log.Fatalf("failed to open database: %v", err)
+		slog.Error("failed to open database", "error", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
@@ -35,7 +38,8 @@ func main() {
 	adminPass := os.Getenv("ADMIN_PASS")
 	if adminUser != "" && adminPass != "" {
 		if err := db.EnsureAdmin(adminUser, adminPass); err != nil {
-			log.Fatalf("failed to create admin: %v", err)
+			slog.Error("failed to create admin", "error", err)
+			os.Exit(1)
 		}
 	}
 
@@ -66,9 +70,10 @@ func main() {
 	mux.HandleFunc("POST /admin/families/{id}/links", s.adminRequired(s.createAccessLink))
 	mux.HandleFunc("DELETE /admin/families/{id}/links/{token}", s.adminRequired(s.deleteAccessLink))
 
-	log.Printf("babytrackd %s listening on :%s", version, port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		log.Fatalf("server error: %v", err)
+	slog.Info("babytrackd starting", "version", version, "port", port)
+	if err := http.ListenAndServe(":"+port, loggingMiddleware(mux)); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
 }
 

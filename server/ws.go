@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -133,7 +133,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("websocket upgrade failed: %v", err)
+		loggerFromCtx(r.Context()).Error("websocket upgrade failed", "error", err)
 		return
 	}
 
@@ -216,7 +216,7 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 		entry.FamilyID = c.familyID
 
 		if err := s.db.UpsertEntry(&entry); err != nil {
-			log.Printf("failed to upsert entry: %v", err)
+			slog.Error("failed to upsert entry", "error", err, "family_id", c.familyID)
 			return
 		}
 
@@ -230,7 +230,7 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 
 	case "delete":
 		if err := s.db.DeleteEntry(c.familyID, msg.ID); err != nil {
-			log.Printf("failed to delete entry: %v", err)
+			slog.Error("failed to delete entry", "error", err, "family_id", c.familyID, "entry_id", msg.ID)
 			return
 		}
 
@@ -245,7 +245,7 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 
 func (s *Server) handleConfigMessage(c *Client, msg WSMessage) {
 	if err := s.db.SaveConfig(c.familyID, string(msg.Data)); err != nil {
-		log.Printf("failed to save config: %v", err)
+		slog.Error("failed to save config", "error", err, "family_id", c.familyID)
 		return
 	}
 
@@ -268,7 +268,7 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 			for _, e := range clientEntries {
 				e.FamilyID = c.familyID
 				if err := s.db.UpsertEntry(&e); err != nil {
-					log.Printf("failed to upsert sync entry: %v", err)
+					slog.Error("failed to upsert sync entry", "error", err, "family_id", c.familyID)
 					continue
 				}
 
@@ -286,7 +286,7 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 	// Then send server entries newer than client's last update
 	entries, err := s.db.GetEntries(c.familyID, msg.SinceUpdate)
 	if err != nil {
-		log.Printf("failed to get entries for sync: %v", err)
+		slog.Error("failed to get entries for sync", "error", err, "family_id", c.familyID)
 		return
 	}
 
