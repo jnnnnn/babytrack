@@ -21,8 +21,8 @@ echo "=== E2E ==="
 rm -f server/babytrack.db  # Clean DB for reproducible tests
 
 if $HUMAN_MODE; then
-  echo "(Human mode: headed browser, slowMo 500ms)"
-  npx playwright test --headed --project=chromium
+  echo "(Human mode: headed browser, slowMo 1200ms)"
+  HUMAN_MODE=1 npx playwright test --project=chromium
 else
   npx playwright test
 fi

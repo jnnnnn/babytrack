@@ -1,18 +1,19 @@
 import { defineConfig } from '@playwright/test';
 
-const isHeaded = process.argv.includes('--headed');
+const isHuman = !!process.env.HUMAN_MODE;
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: isHeaded ? 120000 : 30000,
+  timeout: isHuman ? 120000 : 30000,
   retries: 0,
   use: {
     baseURL: 'http://localhost:8080',
-    headless: !isHeaded,
+    headless: !isHuman,
     screenshot: 'only-on-failure',
     launchOptions: {
-      slowMo: isHeaded ? 500 : 0,
+      slowMo: isHuman ? 1200 : 0,
     },
+    actionTimeout: isHuman ? 10000 : 5000,
   },
   projects: [
     {

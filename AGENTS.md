@@ -10,6 +10,7 @@ Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for a
 - `bd create "Title" --type task --priority 2` - Create issue
 - `bd close <id>` - Complete work
 - `bd sync` - Sync with git (run at session end)
+- `bd update <id> --status=in_progress`
 
 For full workflow details: `bd prime`.
 
