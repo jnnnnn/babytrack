@@ -154,14 +154,16 @@ type Entry struct {
 // Admin methods
 
 func (db *DB) EnsureAdmin(username, password string) error {
-	var exists bool
-	err := db.QueryRow("SELECT 1 FROM admins WHERE username = ?", username).Scan(&exists)
-	if err == nil {
-		return nil // already exists
-	}
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
+		return err
+	}
+
+	var exists bool
+	err = db.QueryRow("SELECT 1 FROM admins WHERE username = ?", username).Scan(&exists)
+	if err == nil {
+		// Update password for existing admin
+		_, err = db.Exec("UPDATE admins SET password_hash = ? WHERE username = ?", string(hash), username)
 		return err
 	}
 
