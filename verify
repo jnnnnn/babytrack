@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+HUMAN_MODE=false
+if [[ "${1:-}" == "--human" ]]; then
+  HUMAN_MODE=true
+fi
+
 echo "=== Format ==="
 gofmt -w server/
 
@@ -14,7 +19,13 @@ echo "=== Test ==="
 
 echo "=== E2E ==="
 rm -f server/babytrack.db  # Clean DB for reproducible tests
-npx playwright test
+
+if $HUMAN_MODE; then
+  echo "(Human mode: headed browser, slowMo 500ms)"
+  npx playwright test --headed --project=chromium
+else
+  npx playwright test
+fi
 
 echo ""
 echo "✓ All checks passed"

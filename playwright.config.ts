@@ -1,13 +1,18 @@
 import { defineConfig } from '@playwright/test';
 
+const isHeaded = process.argv.includes('--headed');
+
 export default defineConfig({
   testDir: './e2e',
-  timeout: 30000,
+  timeout: isHeaded ? 120000 : 30000,
   retries: 0,
   use: {
     baseURL: 'http://localhost:8080',
-    headless: true,
+    headless: !isHeaded,
     screenshot: 'only-on-failure',
+    launchOptions: {
+      slowMo: isHeaded ? 500 : 0,
+    },
   },
   projects: [
     {

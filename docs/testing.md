@@ -174,7 +174,13 @@ func newTestClient() *http.Client {
 ## Running Tests
 
 ```bash
-# All tests
+# Full verification (format, lint, unit tests, E2E)
+./verify
+
+# Human mode - headed browser with slow motion for demos
+./verify --human
+
+# Go unit tests only
 go test ./...
 
 # With coverage
@@ -185,6 +191,12 @@ go test ./server -v
 
 # Race detector (slow, use sparingly)
 go test -race ./...
+
+# E2E only
+npx playwright test
+
+# E2E single test
+npx playwright test -g "logs in"
 ```
 
 ## What We Don't Test
