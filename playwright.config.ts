@@ -6,6 +6,7 @@ export default defineConfig({
   testDir: './e2e',
   timeout: isHuman ? 120000 : 30000,
   retries: 0,
+  workers: 1, // Run serially to avoid race conditions with shared server state
   use: {
     baseURL: 'http://localhost:8080',
     headless: !isHuman,
