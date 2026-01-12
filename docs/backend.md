@@ -350,23 +350,18 @@ To run the `babytrackd` server locally, follow these steps:
    export ADMIN_PASS=secret
    ```
 
-3. **Build the Server**:
+3. **Build and Run the Server**:
    ```bash
    cd server
-   go build .
+   go run .
    ```
-   This creates an executable named `babytrackd`.
+   This command builds and runs the server in one step, simplifying local development.
 
-4. **Run the Server**:
-   ```bash
-   ./babytrackd
-   ```
-
-5. **Access the Server**:
+4. **Access the Server**:
    - Admin UI: [http://localhost:8080/admin](http://localhost:8080/admin)
    - Health Check: [http://localhost:8080/health](http://localhost:8080/health)
 
-6. **Logs**:
+5. **Logs**:
    Logs are output to the console. Use `LOG_LEVEL` and `LOG_FORMAT` to configure logging:
    ```bash
    export LOG_LEVEL=debug
