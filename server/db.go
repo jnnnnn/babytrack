@@ -422,7 +422,8 @@ func (db *DB) GetConfig(familyID string) (string, error) {
 	var data string
 	err := db.QueryRow("SELECT data FROM configs WHERE family_id = ?", familyID).Scan(&data)
 	if err == sql.ErrNoRows {
-		return "{}", nil
+		// Return default config structure if no config exists
+		return `[{"category": "default", "stateful": false, "buttons": []}]`, nil
 	}
 	return data, err
 }

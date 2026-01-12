@@ -1671,54 +1671,14 @@
         groupDiv.className = 'config-group';
         groupDiv.dataset.groupIndex = groupIndex;
 
-        // Build button value options for selects
-        const buttonOptions = group.buttons.map((b) => 
-          `<option value="${b.value}">${b.label}</option>`
-        ).join('');
-        const buttonOptionsMulti = group.buttons.map((b) => {
-          const selected = Array.isArray(group.stateful) && group.stateful.includes(b.value) ? 'selected' : '';
-          return `<option value="${b.value}" ${selected}>${b.label}</option>`;
-        }).join('');
-
-        // Group header with editable category and behavior options
         groupDiv.innerHTML = `
-                        <div class="config-group-header">
-                            <label>Category: <input type="text" value="${group.category}" placeholder="category" 
-                                   onchange="updateGroupCategory(${groupIndex}, this.value)" style="width: 100px;"></label>
-                            <button class="add-btn" onclick="addButtonToGroup(${groupIndex})">+ Add Button</button>
-                        </div>
-                        <div class="config-options" style="display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; font-size: 12px;">
-                            <label title="Show elapsed time on button">
-                                ⏱️ Timing: 
-                                <select onchange="updateGroupOption(${groupIndex}, 'showTiming', this.value)">
-                                    <option value="">None</option>
-                                    ${group.buttons.map((b) => 
-                                      `<option value="${b.value}" ${group.showTiming === b.value ? 'selected' : ''}>${b.label}</option>`
-                                    ).join('')}
-                                </select>
-                            </label>
-                            <label title="Track on/off state with highlighting">
-                                🔘 Stateful: 
-                                <select multiple size="2" onchange="updateGroupOptionMulti(${groupIndex}, 'stateful', this)" style="height: 40px;">
-                                    ${group.buttons.map((b) => {
-                                      const sel = (Array.isArray(group.stateful) && group.stateful.includes(b.value)) ? 'selected' : '';
-                                      return `<option value="${b.value}" ${sel}>${b.label}</option>`;
-                                    }).join('')}
-                                </select>
-                            </label>
-                            <label title="Count in daily stats">
-                                📊 Count: 
-                                <select multiple size="2" onchange="updateGroupOptionMulti(${groupIndex}, 'countDaily', this)" style="height: 40px;">
-                                    ${group.buttons.map((b) => {
-                                      const vals = Array.isArray(group.countDaily) ? group.countDaily : (group.countDaily ? [group.countDaily] : []);
-                                      const sel = vals.includes(b.value) ? 'selected' : '';
-                                      return `<option value="${b.value}" ${sel}>${b.label}</option>`;
-                                    }).join('')}
-                                </select>
-                            </label>
-                        </div>
-                        <div class="config-buttons" data-group="${groupIndex}"></div>
-                    `;
+          <div class="config-group-header">
+            <label>Category: <input type="text" value="${group.category}" placeholder="category" 
+                   onchange="updateGroupCategory(${groupIndex}, this.value)" style="width: 100px;"></label>
+            <button class="add-btn" onclick="addButtonToGroup(${groupIndex})">+ Add Button</button>
+          </div>
+          <div class="config-buttons" data-group="${groupIndex}"></div>
+        `;
 
         const buttonsContainer = groupDiv.querySelector('.config-buttons');
         group.buttons.forEach((btn, btnIndex) => {
@@ -1728,7 +1688,6 @@
         container.appendChild(groupDiv);
       });
 
-      // Add "Add New Group" button
       const addGroupBtn = document.createElement('button');
       addGroupBtn.className = 'add-btn';
       addGroupBtn.style.width = '100%';
@@ -1743,12 +1702,22 @@
       const row = document.createElement('div');
       row.className = 'config-button-row';
       row.innerHTML = `
-                    <input type="text" class="emoji-input" value="${btn.emoji || ''}" placeholder="😀" maxlength="4" 
-                           onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'emoji', this.value)">
-                    <input type="text" value="${btn.label}" placeholder="Label" 
-                           onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'label', this.value)">
-                    <button class="remove-btn" onclick="removeButton(${groupIndex}, ${btnIndex})">×</button>
-                `;
+        <input type="text" class="emoji-input" value="${btn.emoji || ''}" placeholder="😀" maxlength="4" 
+               onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'emoji', this.value)">
+        <input type="text" value="${btn.label}" placeholder="Label" 
+               onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'label', this.value)">
+        <label>
+          <input type="checkbox" ${btn.timing ? 'checked' : ''} 
+                 onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'timing', this.checked)">
+          Timing
+        </label>
+        <label>
+          <input type="checkbox" ${btn.counted ? 'checked' : ''} 
+                 onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'counted', this.checked)">
+          Counted
+        </label>
+        <button class="remove-btn" onclick="removeButton(${groupIndex}, ${btnIndex})">×</button>
+      `;
       return row;
     }
 

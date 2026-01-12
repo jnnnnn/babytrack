@@ -5,6 +5,10 @@
 This project uses **bd (beads)** for issue tracking.
 Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
 
+Any change to the code should be done with an in-progress bead; create one if necessary before changing code.
+
+Once a significant amount of work is done and the LLM context window is starting to get heavy, update bead status (failing tests is allowed) and then say it's time to sleep.
+
 **Quick reference:**
 - `bd ready` - Find unblocked work
 - `bd create "Title" --type task --priority 2` - Create issue

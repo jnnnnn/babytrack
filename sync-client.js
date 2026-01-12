@@ -126,7 +126,9 @@ class SyncClient {
           this.handleEntry(msg);
           break;
         case 'config':
+          // Process the new configuration structure
           this.onConfig(msg.data);
+          console.log('Received config:', msg.data);
           break;
         case 'presence':
           this.onPresence(msg.members || []);
@@ -229,9 +231,20 @@ class SyncClient {
   // Send config update
   sendConfig(config) {
     if (this.connected && this.ws) {
+      // Validate the config structure before sending
+      const validatedConfig = config.map(group => ({
+        category: group.category,
+        stateful: group.stateful,
+        buttons: group.buttons.map(btn => ({
+          label: btn.label,
+          timing: btn.timing,
+          counted: btn.counted
+        }))
+      }));
+
       this.ws.send(JSON.stringify({
         type: 'config',
-        data: config
+        data: validatedConfig
       }));
     }
   }

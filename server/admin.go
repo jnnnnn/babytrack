@@ -90,6 +90,24 @@ func (s *Server) adminRequired(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// Add session validation endpoint
+func (s *Server) validateSession(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("admin_session")
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	adminID, err := s.db.ValidateAdminSession(cookie.Value)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "admin_id": adminID})
+}
+
 // Family handlers
 
 type FamilyWithStats struct {

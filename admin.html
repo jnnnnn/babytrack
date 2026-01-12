@@ -731,15 +731,18 @@
       navigator.clipboard.writeText(input.value);
     }
 
-    // Check auth on load
-    (async function init() {
+    // Check session on page load
+    async function checkSession() {
       try {
-        await api.get('/admin/families');
+        await api.get('/admin/session');
         showDashboard();
       } catch {
         showView('login-view');
       }
-    })();
+    }
+
+    // Call checkSession on page load
+    checkSession();
   </script>
 </body>
 </html>

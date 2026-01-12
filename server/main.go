@@ -70,6 +70,9 @@ func main() {
 	mux.HandleFunc("POST /admin/families/{id}/links", s.adminRequired(s.createAccessLink))
 	mux.HandleFunc("DELETE /admin/families/{id}/links/{token}", s.adminRequired(s.deleteAccessLink))
 
+	// Add session validation route
+	mux.HandleFunc("GET /admin/session", s.validateSession)
+
 	slog.Info("babytrackd starting", "version", version, "port", port)
 	if err := http.ListenAndServe(":"+port, loggingMiddleware(mux)); err != nil {
 		slog.Error("server error", "error", err)

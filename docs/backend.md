@@ -96,6 +96,18 @@ CREATE TABLE configs (
   updated_at INTEGER NOT NULL
 );
 
+-- JSON Structure Example:
+-- [
+--   {
+--     "category": "sleep",
+--     "stateful": true,
+--     "buttons": [
+--       { "label": "sleeping", "timing": true, "counted": true },
+--       { "label": "awake", "timing": true, "counted": false }
+--     ]
+--   }
+-- ]
+
 CREATE INDEX idx_entries_family ON entries(family_id);
 CREATE INDEX idx_entries_updated ON entries(family_id, updated_at);
 CREATE INDEX idx_entries_ts ON entries(family_id, ts);
@@ -314,3 +326,49 @@ server/
 - Access link tokens: 32 chars, cryptographically random
 - Rate limit login attempts
 - No PII in logs
+
+## Running the Server Locally
+
+To run the `babytrackd` server locally, follow these steps:
+
+1. **Install Go**: Ensure you have Go 1.21 or later installed.
+   ```bash
+   go version
+   ```
+   If not installed, download it from [golang.org](https://golang.org/dl/).
+
+2. **Set Environment Variables**:
+   - `PORT`: The port the server will listen on (default: `8080`).
+   - `DB_PATH`: Path to the SQLite database file (default: `babytrack.db`).
+   - `ADMIN_USER` and `ADMIN_PASS`: Optional admin credentials for bootstrapping.
+
+   Example:
+   ```bash
+   export PORT=8080
+   export DB_PATH=./babytrack.db
+   export ADMIN_USER=admin
+   export ADMIN_PASS=secret
+   ```
+
+3. **Build the Server**:
+   ```bash
+   cd server
+   go build .
+   ```
+   This creates an executable named `babytrackd`.
+
+4. **Run the Server**:
+   ```bash
+   ./babytrackd
+   ```
+
+5. **Access the Server**:
+   - Admin UI: [http://localhost:8080/admin](http://localhost:8080/admin)
+   - Health Check: [http://localhost:8080/health](http://localhost:8080/health)
+
+6. **Logs**:
+   Logs are output to the console. Use `LOG_LEVEL` and `LOG_FORMAT` to configure logging:
+   ```bash
+   export LOG_LEVEL=debug
+   export LOG_FORMAT=text
+   ```

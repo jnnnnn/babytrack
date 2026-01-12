@@ -79,3 +79,39 @@ func TestDBMigrationIdempotent(t *testing.T) {
 		t.Errorf("expected version 1, got %d", version)
 	}
 }
+
+func TestConfigHandling(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+	defer os.Remove(path)
+
+	// Insert a configuration
+	config := `[
+		{
+			"category": "sleep",
+			"stateful": true,
+			"buttons": [
+				{"label": "sleeping", "timing": true, "counted": true},
+				{"label": "awake", "timing": true, "counted": false}
+			]
+		}
+	]`
+	err = db.SaveConfig("family1", config)
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	// Retrieve the configuration
+	savedConfig, err := db.GetConfig("family1")
+	if err != nil {
+		t.Fatalf("failed to get config: %v", err)
+	}
+
+	if savedConfig != config {
+		t.Errorf("retrieved config does not match: got %v, want %v", savedConfig, config)
+	}
+}
