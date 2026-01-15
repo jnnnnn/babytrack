@@ -118,18 +118,24 @@ type WSMessage struct {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	log := loggerFromCtx(r.Context())
+
 	// Auth via cookie
 	cookie, err := r.Cookie("client_session")
 	if err != nil {
+		log.Debug("ws auth failed: no cookie", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	link, err := s.db.ValidateAccessLink(cookie.Value)
 	if err != nil {
+		log.Debug("ws auth failed: invalid token", "token_prefix", cookie.Value[:min(8, len(cookie.Value))], "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+
+	log.Debug("ws auth success", "family", link.FamilyID, "label", link.Label)
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

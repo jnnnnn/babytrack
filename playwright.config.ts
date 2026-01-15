@@ -23,9 +23,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'cd server && go run .',
+    command: 'cd server && go build -o babytrackd && ./babytrackd',
     url: 'http://localhost:8080/health',
-    timeout: 10000,
+    timeout: 15000,
     reuseExistingServer: !process.env.CI,
     env: {
       PORT: '8080',

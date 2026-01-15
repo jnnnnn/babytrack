@@ -76,14 +76,6 @@ test.describe('Client Workflow', () => {
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
     
-    // Capture console logs
-    const page2Logs: string[] = [];
-    page2.on('console', msg => {
-      if (msg.text().includes('[WS Sync]') || msg.text().includes('Sync')) {
-        page2Logs.push(msg.text());
-      }
-    });
-    
     const tokenPath = new URL(accessLinkUrl).pathname;
 
     // Page1 accesses the app
@@ -91,20 +83,12 @@ test.describe('Client Workflow', () => {
     await expect(page1).toHaveURL(/\?family=/);
     await expect(page1.locator('.container')).toBeVisible();
     
-    // Check page1 cookies
-    const page1Cookies = await context1.cookies();
-    console.log('Page1 cookies:', page1Cookies.map(c => `${c.name}=${c.value.substring(0,8)}...`));
-    
     // Page2 accesses the app
     await page2.goto(tokenPath);
     await expect(page2).toHaveURL(/\?family=/);
     await expect(page2.locator('.container')).toBeVisible();
-    
-    // Check page2 cookies
-    const page2Cookies = await context2.cookies();
-    console.log('Page2 cookies:', page2Cookies.map(c => `${c.name}=${c.value.substring(0,8)}...`));
 
-    // Wait for WebSocket connections to establish (sync indicator should show connected)
+    // Wait for WebSocket connections to establish
     await expect(page1.locator('#ws-sync-indicator')).toContainText('Synced', { timeout: 5000 });
     await expect(page2.locator('#ws-sync-indicator')).toContainText('Synced', { timeout: 5000 });
 
@@ -123,10 +107,7 @@ test.describe('Client Workflow', () => {
     await expect(page1.locator('.event-type:has-text("nappy")')).toBeVisible();
 
     // Wait for sync to propagate  
-    await page1.waitForTimeout(2000);
-    
-    // Log page2's sync messages
-    console.log('Page2 WS logs:', page2Logs);
+    await page1.waitForTimeout(500);
 
     // Check client 2 received the event via WebSocket broadcast
     const logTab2 = page2.locator('button.tab-btn[data-tab="log"]');
