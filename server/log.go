@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -104,4 +105,45 @@ type loggingResponseWriter struct {
 func (lrw *loggingResponseWriter) WriteHeader(code int) {
 	lrw.status = code
 	lrw.ResponseWriter.WriteHeader(code)
+}
+
+// ClientLogEntry represents a log entry from the frontend
+type ClientLogEntry struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
+	URL     string `json:"url"`
+	Family  string `json:"family"`
+}
+
+// handleClientLog receives frontend console errors and logs them server-side
+func handleClientLog(w http.ResponseWriter, r *http.Request) {
+	var entries []ClientLogEntry
+	if err := json.NewDecoder(r.Body).Decode(&entries); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	log := loggerFromCtx(r.Context())
+	for _, e := range entries {
+		attrs := []any{
+			"source", "frontend",
+			"family", e.Family,
+			"url", e.URL,
+		}
+		if e.Data != nil {
+			attrs = append(attrs, "data", e.Data)
+		}
+
+		switch e.Level {
+		case "error":
+			log.Error(e.Message, attrs...)
+		case "warn":
+			log.Warn(e.Message, attrs...)
+		default:
+			log.Info(e.Message, attrs...)
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -113,5 +114,60 @@ func TestConfigHandling(t *testing.T) {
 
 	if savedConfig != config {
 		t.Errorf("retrieved config does not match: got %v, want %v", savedConfig, config)
+	}
+}
+
+func TestHandleClientLog(t *testing.T) {
+	initLogger()
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "valid error log",
+			body:       `[{"level":"error","message":"test error","url":"http://localhost/","family":"test-family"}]`,
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:       "valid warn log",
+			body:       `[{"level":"warn","message":"test warning","url":"http://localhost/","family":""}]`,
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:       "valid info log",
+			body:       `[{"level":"info","message":"[WS Sync] connected","url":"http://localhost/","family":"fam1"}]`,
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:       "multiple logs",
+			body:       `[{"level":"error","message":"err1"},{"level":"warn","message":"warn1"}]`,
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:       "invalid json",
+			body:       `{invalid`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "empty array",
+			body:       `[]`,
+			wantStatus: http.StatusNoContent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/log", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			handleClientLog(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("expected status %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
 	}
 }

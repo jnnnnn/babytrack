@@ -53,6 +53,7 @@ func main() {
 
 	// Public
 	mux.HandleFunc("GET /health", healthHandler)
+	mux.HandleFunc("POST /log", handleClientLog)
 	mux.HandleFunc("GET /t/{token}", s.handleClientToken)
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
