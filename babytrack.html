@@ -675,6 +675,70 @@
     }
   </style>
   <script>
+    // Frontend error forwarding to backend
+    (function setupErrorForwarding() {
+      const logQueue = [];
+      let flushTimeout = null;
+      
+      function queueLog(level, message, data) {
+        const params = new URLSearchParams(window.location.search);
+        logQueue.push({
+          level,
+          message,
+          data,
+          url: window.location.href,
+          family: params.get('family') || ''
+        });
+        
+        // Debounce flush
+        if (flushTimeout) clearTimeout(flushTimeout);
+        flushTimeout = setTimeout(flushLogs, 100);
+      }
+      
+      function flushLogs() {
+        if (logQueue.length === 0) return;
+        const toSend = logQueue.splice(0, logQueue.length);
+        fetch('/log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(toSend)
+        }).catch(() => {}); // Ignore errors
+      }
+      
+      // Intercept console.error and console.warn
+      const origError = console.error;
+      const origWarn = console.warn;
+      const origLog = console.log;
+      
+      console.error = function(...args) {
+        queueLog('error', args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
+        origError.apply(console, args);
+      };
+      
+      console.warn = function(...args) {
+        queueLog('warn', args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
+        origWarn.apply(console, args);
+      };
+      
+      // Forward [Sync] and [WS Sync] logs for debugging
+      console.log = function(...args) {
+        const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+        if (msg.includes('[Sync]') || msg.includes('[WS Sync]')) {
+          queueLog('info', msg);
+        }
+        origLog.apply(console, args);
+      };
+      
+      // Catch unhandled errors
+      window.addEventListener('error', (e) => {
+        queueLog('error', `Uncaught: ${e.message} at ${e.filename}:${e.lineno}`);
+      });
+      
+      window.addEventListener('unhandledrejection', (e) => {
+        queueLog('error', `Unhandled promise rejection: ${e.reason}`);
+      });
+    })();
+    
     let db = null;
 
     // Tab switching
@@ -1525,6 +1589,9 @@
 
     // Initialize database on load
     initDB();
+    
+    // Initialize WebSocket sync (after short delay to ensure page is ready)
+    setTimeout(() => initWebSocketSync(), 100);
 
     // Update button states every minute to keep elapsed times current
     setInterval(() => {

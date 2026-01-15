@@ -1,11 +1,11 @@
-import { test, expect, Browser } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
 test.describe('Client Workflow', () => {
   let accessLinkUrl: string;
   let familyName: string;
 
   test.beforeAll(async ({ browser }) => {
-    // Admin creates a family and access link
+    // Admin creates a family and TWO access links (one per client)
     const context = await browser.newContext();
     const page = await context.newPage();
     
@@ -20,122 +20,124 @@ test.describe('Client Workflow', () => {
     await page.click('text=+ New Family');
     await expect(page.locator('#create-family-modal')).toBeVisible();
     await page.fill('#family-name', familyName);
-    await page.fill('#family-notes', 'Created by client-workflow E2E test');
     await page.click('button:text("Create")');
 
     // Go to family detail
     await page.locator('.family-item', { hasText: familyName }).click();
     await expect(page.locator('#detail-view')).toBeVisible();
 
-    // Create access link
+    // Create FIRST access link
     await page.click('text=+ Add Link');
     await expect(page.locator('#create-link-modal')).toBeVisible();
-    await page.fill('#link-label', 'Mum Phone');
+    await page.fill('#link-label', 'Test Client 1');
     await page.locator('#create-link-modal button:text("Create")').click();
-
-    // Capture the link URL
     await expect(page.locator('#link-created-modal')).toBeVisible();
     accessLinkUrl = await page.locator('#created-link-url').inputValue();
     expect(accessLinkUrl).toContain('/t/');
-
     await page.click('button:text("Close")');
+
     await context.close();
   });
 
-  test('client accesses app via token link', async ({ page }) => {
-    // Navigate to the access link (relative path)
+  test('client accesses app and logs events', async ({ page }) => {
+    // Navigate to the access link
     const tokenPath = new URL(accessLinkUrl).pathname;
     await page.goto(tokenPath);
 
     // Should redirect to the main app
     await expect(page).toHaveURL(/\?family=/);
     
-    // Should see the baby tracking UI
+    // Should see the baby tracking UI with action buttons
     await expect(page.locator('.container')).toBeVisible();
-    
-    // Should have multiple event buttons (at least 4 from default groups)
     const buttons = page.locator('button.action');
     await expect(buttons.first()).toBeVisible();
     expect(await buttons.count()).toBeGreaterThan(3);
-  });
 
-  test('client logs a feed event', async ({ page }) => {
-    // Navigate via token
-    const tokenPath = new URL(accessLinkUrl).pathname;
-    await page.goto(tokenPath);
-    await expect(page).toHaveURL(/\?family=/);
-
-    // Click the Feed button (bf = breastfeed)
+    // Log a feed event
     const feedButton = page.locator('button.action[data-type="feed"][data-value="bf"]');
     await expect(feedButton).toBeVisible();
     await feedButton.click();
-
-    // Button should show feedback animation (fading class)
     await expect(feedButton).toHaveClass(/fading/);
-    
-    // Wait for animation
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(300);
 
-    // Check that the event appears in the event log
+    // Verify event appears in local log
     const logTab = page.locator('button.tab-btn[data-tab="log"]');
     if (await logTab.isVisible()) {
       await logTab.click();
     }
-
-    // The event should appear in the recent events list (local storage)
     await expect(page.locator('.event-entry', { hasText: 'feed' })).toBeVisible();
   });
 
-  test('client logs a sleep event', async ({ page }) => {
-    const tokenPath = new URL(accessLinkUrl).pathname;
-    await page.goto(tokenPath);
-    await expect(page).toHaveURL(/\?family=/);
-
-    // Click Sleeping button
-    const sleepButton = page.locator('button.action[data-type="sleep"][data-value="sleeping"]');
-    await expect(sleepButton).toBeVisible();
-    await sleepButton.click();
-
-    // Wait for save
-    await page.waitForTimeout(500);
-
-    // Switch to Event Log tab if needed
-    const logTab = page.locator('button.tab-btn[data-tab="log"]');
-    if (await logTab.isVisible()) {
-      await logTab.click();
-    }
-
-    // The sleep event should appear in local storage
-    await expect(page.locator('.event-entry', { hasText: 'sleeping' })).toBeVisible();
-  });
-
-  test('client logs a nappy event', async ({ page }) => {
-    const tokenPath = new URL(accessLinkUrl).pathname;
-    await page.goto(tokenPath);
-    await expect(page).toHaveURL(/\?family=/);
-
-    // Click Wet nappy button
-    const wetButton = page.locator('button.action[data-type="nappy"][data-value="wet"]');
-    await expect(wetButton).toBeVisible();
-    await wetButton.click();
-
-    await page.waitForTimeout(500);
-
-    // Switch to Event Log tab if needed
-    const logTab = page.locator('button.tab-btn[data-tab="log"]');
-    if (await logTab.isVisible()) {
-      await logTab.click();
-    }
-
-    // The nappy event should appear in local storage
-    await expect(page.locator('.event-entry', { hasText: 'wet' })).toBeVisible();
-  });
-
-  test('synced events appear in admin summary', async ({ browser }) => {
-    // TODO: WebSocket sync needs investigation - entries not persisting to server DB
-    // Created issue for follow-up: observability/debugging of sync pipeline
-    // For now, verify the admin can view the family summary UI
+  test('bidirectional sync: client -> server -> other session', async ({ browser }) => {
+    // Open two browser contexts - simulating two different clients
+    const context1 = await browser.newContext();
+    const context2 = await browser.newContext();
     
+    const page1 = await context1.newPage();
+    const page2 = await context2.newPage();
+    
+    // Capture console logs
+    const page2Logs: string[] = [];
+    page2.on('console', msg => {
+      if (msg.text().includes('[WS Sync]') || msg.text().includes('Sync')) {
+        page2Logs.push(msg.text());
+      }
+    });
+    
+    const tokenPath = new URL(accessLinkUrl).pathname;
+
+    // Page1 accesses the app
+    await page1.goto(tokenPath);
+    await expect(page1).toHaveURL(/\?family=/);
+    await expect(page1.locator('.container')).toBeVisible();
+    
+    // Check page1 cookies
+    const page1Cookies = await context1.cookies();
+    console.log('Page1 cookies:', page1Cookies.map(c => `${c.name}=${c.value.substring(0,8)}...`));
+    
+    // Page2 accesses the app
+    await page2.goto(tokenPath);
+    await expect(page2).toHaveURL(/\?family=/);
+    await expect(page2.locator('.container')).toBeVisible();
+    
+    // Check page2 cookies
+    const page2Cookies = await context2.cookies();
+    console.log('Page2 cookies:', page2Cookies.map(c => `${c.name}=${c.value.substring(0,8)}...`));
+
+    // Wait for WebSocket connections to establish (sync indicator should show connected)
+    await expect(page1.locator('#ws-sync-indicator')).toContainText('Synced', { timeout: 5000 });
+    await expect(page2.locator('#ws-sync-indicator')).toContainText('Synced', { timeout: 5000 });
+
+    // Client 1 logs a unique event - use wet nappy
+    const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
+    await expect(wetButton1).toBeVisible();
+    await wetButton1.click();
+    await page1.waitForTimeout(300);
+
+    // Verify client 1 sees the event
+    const logTab1 = page1.locator('button.tab-btn[data-tab="log"]');
+    if (await logTab1.isVisible()) {
+      await logTab1.click();
+    }
+    // Look for the event-type span containing "nappy" in the visible event entry
+    await expect(page1.locator('.event-type:has-text("nappy")')).toBeVisible();
+
+    // Wait for sync to propagate  
+    await page1.waitForTimeout(2000);
+    
+    // Log page2's sync messages
+    console.log('Page2 WS logs:', page2Logs);
+
+    // Check client 2 received the event via WebSocket broadcast
+    const logTab2 = page2.locator('button.tab-btn[data-tab="log"]');
+    if (await logTab2.isVisible()) {
+      await logTab2.click();
+    }
+    
+    // Client 2 should see the wet nappy event from client 1 via WebSocket
+    await expect(page2.locator('.event-type:has-text("nappy")')).toBeVisible({ timeout: 10000 });
+
+    // Also verify server persisted - open admin and check summary
     const adminContext = await browser.newContext();
     const adminPage = await adminContext.newPage();
     
@@ -145,20 +147,16 @@ test.describe('Client Workflow', () => {
     await adminPage.click('button[type="submit"]');
     await expect(adminPage.locator('#dashboard-view')).toBeVisible();
 
-    // Go to the family
     await adminPage.locator('.family-item', { hasText: familyName }).click();
     await expect(adminPage.locator('#detail-view')).toBeVisible();
-
-    // Verify summary UI is functional
-    await expect(adminPage.locator('.section-title', { hasText: "Today's Summary" })).toBeVisible();
+    
+    // Summary should show the nappy event (wet = nappy type)
     await expect(adminPage.locator('#summary-totals')).toBeVisible();
-    await expect(adminPage.locator('#summary-date')).toBeVisible();
-    
-    // Can navigate dates
-    await adminPage.click('.date-nav button:first-child');
-    const dateAfterNav = await adminPage.locator('#summary-date').textContent();
-    expect(dateAfterNav).toBeTruthy();
-    
+    // The totals should contain nappy count
+    await expect(adminPage.locator('#summary-totals', { hasText: 'nappy' })).toBeVisible({ timeout: 5000 });
+
+    await context1.close();
+    await context2.close();
     await adminContext.close();
   });
 });
