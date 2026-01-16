@@ -1924,43 +1924,19 @@
       window.syncClient.connect();
     }
     
-    // Update sync status indicator
+    // Update sync status indicator (console only)
     function updateWsSyncIndicator(status) {
-      let indicator = document.getElementById('ws-sync-indicator');
-      if (!indicator) {
-        // Create indicator if it doesn't exist
-        indicator = document.createElement('div');
-        indicator.id = 'ws-sync-indicator';
-        indicator.style.cssText = 'position: fixed; top: 8px; right: 8px; padding: 4px 8px; border-radius: 4px; font-size: 11px; z-index: 1000;';
-        document.body.appendChild(indicator);
-      }
-      
       if (status === 'connected') {
-        indicator.textContent = '🟢 Synced';
-        indicator.style.background = '#e8f5e9';
-        indicator.style.color = '#2e7d32';
+        console.log('[Sync] 🟢 Connected');
       } else {
-        indicator.textContent = '🔴 Offline';
-        indicator.style.background = '#ffebee';
-        indicator.style.color = '#c62828';
+        console.log('[Sync] 🔴 Offline');
       }
     }
     
-    // Update presence indicator to show who's online
+    // Update presence indicator (console only)
     function updatePresenceIndicator(members) {
-      let indicator = document.getElementById('presence-indicator');
-      if (!indicator) {
-        indicator = document.createElement('div');
-        indicator.id = 'presence-indicator';
-        indicator.style.cssText = 'position: fixed; top: 32px; right: 8px; padding: 4px 8px; border-radius: 4px; font-size: 11px; background: #e3f2fd; color: #1565c0; z-index: 1000;';
-        document.body.appendChild(indicator);
-      }
-      
       if (members.length > 0) {
-        indicator.textContent = '👥 ' + members.join(', ');
-        indicator.style.display = 'block';
-      } else {
-        indicator.style.display = 'none';
+        console.log('[Presence] 👥 Online:', members.join(', '));
       }
     }
     
