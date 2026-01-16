@@ -278,12 +278,21 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 					continue
 				}
 
-				// Broadcast to other clients
-				broadcast, _ := json.Marshal(map[string]any{
-					"type":   "entry",
-					"action": "add",
-					"entry":  e,
-				})
+				// Broadcast to other clients - use appropriate action based on deleted flag
+				var broadcast []byte
+				if e.Deleted {
+					broadcast, _ = json.Marshal(map[string]any{
+						"type":   "entry",
+						"action": "delete",
+						"id":     e.ID,
+					})
+				} else {
+					broadcast, _ = json.Marshal(map[string]any{
+						"type":   "entry",
+						"action": "add",
+						"entry":  e,
+					})
+				}
 				s.hub.Broadcast(c.familyID, broadcast, c)
 			}
 		}

@@ -179,7 +179,9 @@ class SyncClient {
     // Response to incremental sync request
     if (msg.entries) {
       for (const entry of msg.entries) {
-        this.onEntry('add', entry);
+        // Use appropriate action based on deleted flag
+        const action = entry.deleted ? 'delete' : 'add';
+        this.onEntry(action, entry);
         if (entry.updated_at > this.lastUpdatedAt) {
           this.lastUpdatedAt = entry.updated_at;
         }

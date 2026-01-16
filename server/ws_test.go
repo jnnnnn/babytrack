@@ -11,6 +11,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func init() {
+	initLogger()
+}
 func TestWebSocketConnection(t *testing.T) {
 	// Setup
 	path := t.TempDir() + "/test.db"
@@ -263,5 +266,310 @@ func TestIncrementalSync(t *testing.T) {
 	allEntries, _ := db.GetEntries(family.ID, 0)
 	if len(allEntries) != 2 {
 		t.Errorf("expected 2 entries, got %d", len(allEntries))
+	}
+}
+
+func TestDeleteEntrySync(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	family, _ := db.CreateFamily("Test Baby", "")
+	link1, _ := db.CreateAccessLink(family.ID, "Client 1", nil)
+	link2, _ := db.CreateAccessLink(family.ID, "Client 2", nil)
+
+	s := &Server{db: db, hub: NewHub(db)}
+
+	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.Dialer{}
+
+	// Connect client 1
+	header1 := http.Header{}
+	header1.Add("Cookie", "client_session="+link1.Token)
+	conn1, _, err := dialer.Dial(wsURL, header1)
+	if err != nil {
+		t.Fatalf("client1 failed to connect: %v", err)
+	}
+	defer conn1.Close()
+
+	// Connect client 2
+	header2 := http.Header{}
+	header2.Add("Cookie", "client_session="+link2.Token)
+	conn2, _, err := dialer.Dial(wsURL, header2)
+	if err != nil {
+		t.Fatalf("client2 failed to connect: %v", err)
+	}
+	defer conn2.Close()
+
+	// Wait for init messages on both clients
+	conn1.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	conn2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+
+	// Drain until we get init for both
+	for {
+		_, msg, err := conn1.ReadMessage()
+		if err != nil {
+			t.Fatalf("client1 failed to receive init: %v", err)
+		}
+		var m map[string]any
+		json.Unmarshal(msg, &m)
+		if m["type"] == "init" {
+			break
+		}
+	}
+	for {
+		_, msg, err := conn2.ReadMessage()
+		if err != nil {
+			t.Fatalf("client2 failed to receive init: %v", err)
+		}
+		var m map[string]any
+		json.Unmarshal(msg, &m)
+		if m["type"] == "init" {
+			break
+		}
+	}
+
+	// Client 1 adds an entry
+	addMsg := map[string]any{
+		"type":   "entry",
+		"action": "add",
+		"entry": map[string]any{
+			"id":    "delete-test-entry",
+			"ts":    time.Now().UnixMilli(),
+			"type":  "feed",
+			"value": "bottle",
+		},
+	}
+	addJSON, _ := json.Marshal(addMsg)
+	conn1.WriteMessage(websocket.TextMessage, addJSON)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Client 2 receives the add broadcast - drain it
+	conn2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _, err = conn2.ReadMessage()
+	if err != nil {
+		t.Fatalf("client2 failed to receive add broadcast: %v", err)
+	}
+
+	// Verify entry exists
+	entries, _ := db.GetEntries(family.ID, 0)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Deleted {
+		t.Error("entry should not be deleted yet")
+	}
+
+	// Client 1 deletes the entry
+	deleteMsg := map[string]any{
+		"type":   "entry",
+		"action": "delete",
+		"id":     "delete-test-entry",
+	}
+	deleteJSON, _ := json.Marshal(deleteMsg)
+	conn1.WriteMessage(websocket.TextMessage, deleteJSON)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify entry is marked as deleted in DB
+	entries, _ = db.GetEntries(family.ID, 0)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if !entries[0].Deleted {
+		t.Error("entry should be marked as deleted")
+	}
+
+	// Client 2 should receive delete broadcast
+	conn2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, msg, err := conn2.ReadMessage()
+	if err != nil {
+		t.Fatalf("client2 failed to receive delete broadcast: %v", err)
+	}
+
+	var received map[string]any
+	if err := json.Unmarshal(msg, &received); err != nil {
+		t.Fatalf("failed to parse broadcast: %v", err)
+	}
+
+	if received["type"] != "entry" {
+		t.Errorf("expected type=entry, got %v", received["type"])
+	}
+	if received["action"] != "delete" {
+		t.Errorf("expected action=delete, got %v", received["action"])
+	}
+	if received["id"] != "delete-test-entry" {
+		t.Errorf("expected id=delete-test-entry, got %v", received["id"])
+	}
+}
+
+func TestDeletedEntrySyncToNewClient(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	family, _ := db.CreateFamily("Test Baby", "")
+	link, _ := db.CreateAccessLink(family.ID, "Client", nil)
+
+	// Create an entry and then delete it
+	entry := &Entry{ID: "already-deleted", FamilyID: family.ID, Ts: 1000, Type: "feed", Value: "bottle"}
+	db.UpsertEntry(entry)
+	db.DeleteEntry(family.ID, "already-deleted")
+
+	s := &Server{db: db, hub: NewHub(db)}
+
+	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.Dialer{}
+
+	header := http.Header{}
+	header.Add("Cookie", "client_session="+link.Token)
+	conn, _, err := dialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// Read init message (skip presence messages)
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	var initMsg map[string]any
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("failed to read init: %v", err)
+		}
+		if err := json.Unmarshal(msg, &initMsg); err != nil {
+			t.Fatalf("failed to parse message: %v", err)
+		}
+		if initMsg["type"] == "init" {
+			break
+		}
+	}
+
+	// Init should include the deleted entry with deleted=true
+	entriesRaw, ok := initMsg["entries"].([]any)
+	if !ok {
+		t.Fatalf("expected entries array in init, got %T", initMsg["entries"])
+	}
+	if len(entriesRaw) != 1 {
+		t.Fatalf("expected 1 entry in init, got %d", len(entriesRaw))
+	}
+
+	entryData := entriesRaw[0].(map[string]any)
+	if entryData["deleted"] != true {
+		t.Errorf("expected entry to have deleted=true, got %v", entryData["deleted"])
+	}
+}
+
+func TestSyncDeletedEntryBroadcast(t *testing.T) {
+	// Test that when client1 syncs a deleted entry, client2 receives a delete action
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	family, _ := db.CreateFamily("Test Baby", "")
+	link1, _ := db.CreateAccessLink(family.ID, "Client 1", nil)
+	link2, _ := db.CreateAccessLink(family.ID, "Client 2", nil)
+
+	s := &Server{db: db, hub: NewHub(db)}
+
+	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.Dialer{}
+
+	// Connect both clients
+	header1 := http.Header{}
+	header1.Add("Cookie", "client_session="+link1.Token)
+	conn1, _, err := dialer.Dial(wsURL, header1)
+	if err != nil {
+		t.Fatalf("client1 failed to connect: %v", err)
+	}
+	defer conn1.Close()
+
+	header2 := http.Header{}
+	header2.Add("Cookie", "client_session="+link2.Token)
+	conn2, _, err := dialer.Dial(wsURL, header2)
+	if err != nil {
+		t.Fatalf("client2 failed to connect: %v", err)
+	}
+	defer conn2.Close()
+
+	// Wait for init messages
+	conn1.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	conn2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	for {
+		_, msg, _ := conn1.ReadMessage()
+		var m map[string]any
+		json.Unmarshal(msg, &m)
+		if m["type"] == "init" {
+			break
+		}
+	}
+	for {
+		_, msg, _ := conn2.ReadMessage()
+		var m map[string]any
+		json.Unmarshal(msg, &m)
+		if m["type"] == "init" {
+			break
+		}
+	}
+
+	// Client 1 sends a sync message with a deleted entry
+	syncMsg := map[string]any{
+		"type":         "sync",
+		"since_update": 0,
+		"entries": []map[string]any{
+			{
+				"id":         "synced-deleted-entry",
+				"ts":         time.Now().UnixMilli(),
+				"type":       "feed",
+				"value":      "bottle",
+				"deleted":    true,
+				"updated_at": time.Now().UnixMilli(),
+			},
+		},
+	}
+	syncJSON, _ := json.Marshal(syncMsg)
+	conn1.WriteMessage(websocket.TextMessage, syncJSON)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Client 2 should receive a delete broadcast (not an add)
+	conn2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, msg, err := conn2.ReadMessage()
+	if err != nil {
+		t.Fatalf("client2 failed to receive broadcast: %v", err)
+	}
+
+	var received map[string]any
+	if err := json.Unmarshal(msg, &received); err != nil {
+		t.Fatalf("failed to parse broadcast: %v", err)
+	}
+
+	if received["type"] != "entry" {
+		t.Errorf("expected type=entry, got %v", received["type"])
+	}
+	if received["action"] != "delete" {
+		t.Errorf("expected action=delete for synced deleted entry, got %v", received["action"])
+	}
+	if received["id"] != "synced-deleted-entry" {
+		t.Errorf("expected id=synced-deleted-entry, got %v", received["id"])
 	}
 }
