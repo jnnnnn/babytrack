@@ -4,8 +4,49 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 HUMAN_MODE=false
-if [[ "${1:-}" == "--human" ]]; then
-  HUMAN_MODE=true
+UNCOVERED_MODE=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --human) HUMAN_MODE=true ;;
+    --uncovered) UNCOVERED_MODE=true ;;
+  esac
+done
+
+# --uncovered: print uncovered lines and exit
+if $UNCOVERED_MODE; then
+  echo "=== Uncovered Lines ==="
+  (cd server && go test -coverprofile=coverage.out ./... >/dev/null 2>&1)
+  # Parse coverage.out: format is "pkg/file.go:startLine.startCol,endLine.endCol numStmts count"
+  # Lines with count=0 are uncovered
+  awk '
+    NR > 1 {
+      # Split "babytrackd/file.go:15.69,20.61 2 0" 
+      split($0, parts, " ")
+      count = parts[3]
+      if (count == "0") {
+        # Parse location: "babytrackd/file.go:15.69,20.61"
+        split(parts[1], loc, ":")
+        path = loc[1]
+        range_str = loc[2]
+        # Extract filename from path
+        n = split(path, pathparts, "/")
+        file = pathparts[n]
+        # Parse "15.69,20.61" to get line numbers
+        split(range_str, range, ",")
+        split(range[1], start, ".")
+        split(range[2], end, ".")
+        startLine = start[1]
+        endLine = end[1]
+        if (startLine == endLine) {
+          print "server/" file ":" startLine
+        } else {
+          print "server/" file ":" startLine "-" endLine
+        }
+      }
+    }
+  ' server/coverage.out | sort -t: -k1,1 -k2,2n | uniq
+  exit 0
 fi
 
 echo "=== Format ==="
