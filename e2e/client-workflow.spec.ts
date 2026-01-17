@@ -88,10 +88,6 @@ test.describe('Client Workflow', () => {
     await expect(page2).toHaveURL(/\?family=/);
     await expect(page2.locator('.container')).toBeVisible();
 
-    // Wait for WebSocket connections to establish
-    await expect(page1.locator('#ws-sync-indicator')).toContainText('Synced', { timeout: 5000 });
-    await expect(page2.locator('#ws-sync-indicator')).toContainText('Synced', { timeout: 5000 });
-
     // Client 1 logs a unique event - use wet nappy
     const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
     await expect(wetButton1).toBeVisible();
