@@ -1543,16 +1543,33 @@
         const categoryEntries = activeEntries.filter((e) => e.type === group.category);
         const lastEntry = [...categoryEntries].pop();
 
+        // Determine stateful values: explicit stateful OR implicit from showTiming
+        const statefulValues = group.stateful
+          ? (Array.isArray(group.stateful) ? group.stateful : [group.stateful])
+          : group.showTiming
+            ? (Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming])
+            : null;
+
         // Handle showTiming: show elapsed time on specific button(s)
-        if (group.showTiming) {
+        // Skip if stateful is also defined (stateful handler will show timing)
+        if (group.showTiming && !group.stateful) {
           const timingValues = Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming];
-          timingValues.forEach((val) => {
-            const lastOfValue = [...categoryEntries].reverse().find((e) => e.value === val);
-            const btn = document.querySelector(`button[data-type="${group.category}"][data-value="${val}"]`);
-            if (btn) {
-              const buttonConfig = group.buttons.find((b) => b.value === val);
-              const elapsed = lastOfValue ? formatElapsedTime(new Date(lastOfValue.ts).getTime()) : null;
-              updateButtonDisplay(btn, buttonConfig?.label || val, elapsed, false);
+          const isOn = lastEntry && timingValues.includes(lastEntry.value);
+          const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
+
+          group.buttons.forEach((btn) => {
+            const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
+            if (!button) return;
+
+            const isOnButton = timingValues.includes(btn.value);
+            if (lastEntry) {
+              // Show timing on the active state button, highlight appropriately
+              const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
+              updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
+            } else {
+              // No entries - show timing buttons as inactive
+              const buttonConfig = group.buttons.find((b) => b.value === btn.value);
+              updateButtonDisplay(button, buttonConfig?.label || btn.value, null, false);
             }
           });
         }
