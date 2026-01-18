@@ -49,6 +49,7 @@ func main() {
 	// Static files
 	mux.HandleFunc("GET /admin", serveFile("admin.html"))
 	mux.HandleFunc("GET /babytrack.html", serveFile("babytrack.html"))
+	mux.HandleFunc("GET /babytrack.css", serveFile("babytrack.css"))
 	mux.HandleFunc("GET /babytrack.js", serveFile("babytrack.js"))
 	mux.HandleFunc("GET /reporting.js", serveFile("reporting.js"))
 	mux.HandleFunc("GET /sync-client.js", serveFile("sync-client.js"))
