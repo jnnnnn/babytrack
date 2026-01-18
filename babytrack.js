@@ -64,7 +64,28 @@ function setupErrorForwarding() {
 };
 
 function init() {
+
+  // Initialize database on load
+  initDB();
+
+  // Initialize WebSocket sync (after short delay to ensure page is ready)
+  setTimeout(() => initWebSocketSync(), 100);
+
+  // Update button states every minute to keep elapsed times current
+  setInterval(() => {
+    updateButtonStates();
+  }, 60000); // 60000ms = 1 minute
+
   setupErrorForwarding();
+
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && document.activeElement?.id === 'notes') {
+      saveNote({ target: document.activeElement });
+    }
+  });
+
+  initReport();
 }
 
 let db = null;
@@ -802,23 +823,6 @@ async function updateButtonStates() {
     }
   });
 }
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && document.activeElement?.id === 'notes') {
-    saveNote({ target: document.activeElement });
-  }
-});
-
-// Initialize database on load
-initDB();
-
-// Initialize WebSocket sync (after short delay to ensure page is ready)
-setTimeout(() => initWebSocketSync(), 100);
-
-// Update button states every minute to keep elapsed times current
-setInterval(() => {
-  updateButtonStates();
-}, 60000); // 60000ms = 1 minute
 
 // Daily Report Functions
 let currentReportDate = new Date();
@@ -1944,65 +1948,68 @@ function drawTimeline(entries) {
 
 
 
+function initReport() {
 
+  // Initialize date selector to today
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  document.getElementById('report-date').value = `${year}-${month}-${day}`;
 
-// Initialize date selector to today
-const today = new Date();
-const year = today.getFullYear();
-const month = String(today.getMonth() + 1).padStart(2, '0');
-const day = String(today.getDate()).padStart(2, '0');
-document.getElementById('report-date').value = `${year}-${month}-${day}`;
+  // Build hourly grid
+  const hourlyGrid = document.getElementById('hourly-grid');
 
-// Build hourly grid
-const hourlyGrid = document.getElementById('hourly-grid');
+  // Add empty cell for top-left corner
+  const corner = document.createElement('div');
+  hourlyGrid.appendChild(corner);
 
-// Add empty cell for top-left corner
-const corner = document.createElement('div');
-hourlyGrid.appendChild(corner);
+  // Add hour labels across the top
+  for (let hour = 0; hour < 24; hour++) {
+    const label = document.createElement('div');
+    label.className = 'hour-label';
+    label.textContent = hour;
+    hourlyGrid.appendChild(label);
+  }
 
-// Add hour labels across the top
-for (let hour = 0; hour < 24; hour++) {
-  const label = document.createElement('div');
-  label.className = 'hour-label';
-  label.textContent = hour;
-  hourlyGrid.appendChild(label);
+  // Add rows with labels
+  const reportGridRows = [
+    { label: 'Feed', type: 'feed' },
+    { label: 'Sleep', type: 'sleep' },
+    { label: 'Wet', type: 'wet' },
+    { label: 'Dirty', type: 'dirty' },
+  ];
+
+  reportGridRows.forEach((row) => {
+    // Add row label
+    const rowLabel = document.createElement('div');
+    rowLabel.className = 'row-label';
+    rowLabel.textContent = row.label;
+    hourlyGrid.appendChild(rowLabel);
+
+    // Add indicators for each hour
+    for (let hour = 0; hour < 24; hour++) {
+      const indicator = document.createElement('div');
+      indicator.className = `hour-indicator ${row.type}`;
+      indicator.id = `hour-${hour}-${row.type}`;
+      indicator.title = `${row.label} at ${hour}:00`;
+      hourlyGrid.appendChild(indicator);
+    }
+  });
+
+  initDB().then(() => {
+    renderButtons();
+    updateDailyReport();
+    updateButtonStates();
+
+    // Setup event filters
+    d3.select('#event-filter').on('input', applyEventFilters);
+    d3.select('#event-type-filter').on('change', applyEventFilters);
+    d3.select('#hide-deleted-filter').on('change', applyEventFilters);
+  });
+
 }
 
-// Add rows with labels
-const rows = [
-  { label: 'Feed', type: 'feed' },
-  { label: 'Sleep', type: 'sleep' },
-  { label: 'Wet', type: 'wet' },
-  { label: 'Dirty', type: 'dirty' },
-];
-
-rows.forEach((row) => {
-  // Add row label
-  const rowLabel = document.createElement('div');
-  rowLabel.className = 'row-label';
-  rowLabel.textContent = row.label;
-  hourlyGrid.appendChild(rowLabel);
-
-  // Add indicators for each hour
-  for (let hour = 0; hour < 24; hour++) {
-    const indicator = document.createElement('div');
-    indicator.className = `hour-indicator ${row.type}`;
-    indicator.id = `hour-${hour}-${row.type}`;
-    indicator.title = `${row.label} at ${hour}:00`;
-    hourlyGrid.appendChild(indicator);
-  }
-});
-
-initDB().then(() => {
-  renderButtons();
-  updateDailyReport();
-  updateButtonStates();
-
-  // Setup event filters
-  d3.select('#event-filter').on('input', applyEventFilters);
-  d3.select('#event-type-filter').on('change', applyEventFilters);
-  d3.select('#hide-deleted-filter').on('change', applyEventFilters);
-});
 
 let allDayEntries = []; // Store all entries for filtering
 
