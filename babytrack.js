@@ -1,0 +1,2256 @@
+
+// Frontend error forwarding to backend
+function setupErrorForwarding() {
+  const logQueue = [];
+  let flushTimeout = null;
+
+  function queueLog(level, message, data) {
+    const params = new URLSearchParams(window.location.search);
+    logQueue.push({
+      level,
+      message,
+      data,
+      url: window.location.href,
+      family: params.get('family') || ''
+    });
+
+    // Debounce flush
+    if (flushTimeout) clearTimeout(flushTimeout);
+    flushTimeout = setTimeout(flushLogs, 100);
+  }
+
+  function flushLogs() {
+    if (logQueue.length === 0) return;
+    const toSend = logQueue.splice(0, logQueue.length);
+    fetch('/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toSend)
+    }).catch(() => { }); // Ignore errors
+  }
+
+  // Intercept console.error and console.warn
+  const origError = console.error;
+  const origWarn = console.warn;
+  const origLog = console.log;
+
+  console.error = function (...args) {
+    queueLog('error', args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
+    origError.apply(console, args);
+  };
+
+  console.warn = function (...args) {
+    queueLog('warn', args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
+    origWarn.apply(console, args);
+  };
+
+  // Forward [Sync] and [WS Sync] logs for debugging
+  console.log = function (...args) {
+    const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+    if (msg.includes('[Sync]') || msg.includes('[WS Sync]')) {
+      queueLog('info', msg);
+    }
+    origLog.apply(console, args);
+  };
+
+  // Catch unhandled errors
+  window.addEventListener('error', (e) => {
+    queueLog('error', `Uncaught: ${e.message} at ${e.filename}:${e.lineno}`);
+  });
+
+  window.addEventListener('unhandledrejection', (e) => {
+    queueLog('error', `Unhandled promise rejection: ${e.reason}`);
+  });
+};
+
+function init() {
+  setupErrorForwarding();
+}
+
+let db = null;
+
+// Tab switching
+function switchTab(tabName) {
+  // Hide all tab contents
+  document.querySelectorAll('.tab-content').forEach((tab) => {
+    tab.classList.remove('active');
+  });
+  // Deactivate all tab buttons
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
+    btn.classList.remove('active');
+  });
+  // Show selected tab content
+  document.getElementById(tabName + '-tab').classList.add('active');
+  // Activate selected tab button
+  document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+}
+
+// Initialize IndexedDB
+async function initDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('BabyLogDB', 3);
+
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      db = request.result;
+      resolve(db);
+    };
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      const oldVersion = event.oldVersion;
+
+      if (oldVersion < 1) {
+        // Create initial schema
+        const objectStore = db.createObjectStore('entries', { keyPath: 'id', autoIncrement: true });
+        objectStore.createIndex('timestamp', 'ts', {
+          unique: false,
+        });
+      }
+
+      if (oldVersion < 2) {
+        // Migration to version 2: Add deleted field to existing entries
+        const transaction = event.target.transaction;
+        const objectStore = transaction.objectStore('entries');
+
+        objectStore.openCursor().onsuccess = (cursorEvent) => {
+          const cursor = cursorEvent.target.result;
+          if (cursor) {
+            const entry = cursor.value;
+            if (!entry.hasOwnProperty('deleted')) {
+              entry.deleted = false;
+              cursor.update(entry);
+            }
+            cursor.continue();
+          }
+        };
+      }
+
+      if (oldVersion < 3) {
+        // Migration to version 3: Add updated field for sync
+        const transaction = event.target.transaction;
+        const objectStore = transaction.objectStore('entries');
+
+        // Create index on updated field for efficient sync queries
+        if (!objectStore.indexNames.contains('updated')) {
+          objectStore.createIndex('updated', 'updated', { unique: false });
+        }
+
+        objectStore.openCursor().onsuccess = (cursorEvent) => {
+          const cursor = cursorEvent.target.result;
+          if (cursor) {
+            const entry = cursor.value;
+            if (!entry.hasOwnProperty('updated')) {
+              entry.updated = entry.ts; // Use ts as initial updated value
+              cursor.update(entry);
+            }
+            cursor.continue();
+          }
+        };
+      }
+    };
+  });
+}
+
+// Add a single entry to the database
+async function addEntry(type, value, ts) {
+  if (!db) await initDB();
+
+  const transaction = db.transaction(['entries'], 'readwrite');
+  const objectStore = transaction.objectStore('entries');
+  const now = new Date().toISOString();
+
+  // Generate a UUID for sync compatibility
+  const syncId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+
+  const entry = { type, value, ts, deleted: false, updated: now, syncId };
+  const request = objectStore.add(entry);
+
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => {
+      entry.id = request.result; // Set the auto-generated ID
+
+      // Sync to server if connected
+      if (window.syncClient && window.syncClient.isConnected()) {
+        window.syncClient.sendEntry('add', {
+          id: entry.syncId,
+          ts: new Date(ts).getTime(),
+          type: entry.type,
+          value: entry.value,
+          deleted: entry.deleted
+        });
+      }
+
+      resolve(request.result);
+    };
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+async function loadEntriesByDate(date) {
+  if (!db) await initDB();
+
+  const transaction = db.transaction(['entries'], 'readonly');
+  const objectStore = transaction.objectStore('entries');
+
+  let range;
+  if (date) {
+    const { start, end } = getDayBounds(date);
+    // Query 12 hours before and after to catch sleep periods that cross midnight
+    const expandedStart = new Date(new Date(start).getTime() - 12 * 60 * 60 * 1000).toISOString();
+    const expandedEnd = new Date(new Date(end).getTime() + 12 * 60 * 60 * 1000).toISOString();
+    range = IDBKeyRange.bound(expandedStart, expandedEnd);
+  } else {
+    const yesterday = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+    range = IDBKeyRange.lowerBound(yesterday);
+  }
+
+  const request = objectStore.index('timestamp').getAll(range);
+
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function clearAllEntries() {
+  if (!db) await initDB();
+
+  const transaction = db.transaction(['entries'], 'readwrite');
+  const objectStore = transaction.objectStore('entries');
+  objectStore.clear();
+
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+// Helper to format elapsed time
+function formatElapsedTime(timestampMs) {
+  const elapsed = Math.floor((Date.now() - timestampMs) / 1000 / 60);
+  const hours = Math.floor(elapsed / 60);
+  const mins = elapsed % 60;
+  return hours > 0 ? `${hours}h ${mins}m ago` : `${mins}m ago`;
+}
+
+// Helper to create day boundary timestamps
+function getDayBounds(date) {
+  // Create start/end in local timezone - these are Date objects representing
+  // midnight and end-of-day in the local timezone
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+  const end = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+  // Return ISO strings for database queries - these will be in UTC but represent
+  // the local day boundaries
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+// Helper to get day bounds as Date objects (not ISO strings)
+function getDayBoundsAsDate(date) {
+  const { start, end } = getDayBounds(date);
+  return { dayStart: new Date(start), dayEnd: new Date(end) };
+}
+
+// Helper to check if an entry is within day boundaries
+function isEntryInDay(entry, dayStart, dayEnd) {
+  const ts = new Date(entry.ts);
+  return ts >= dayStart && ts <= dayEnd;
+}
+
+// Helper to filter entries to only those within the day
+function filterEntriesInDay(entries, date) {
+  const { dayStart, dayEnd } = getDayBoundsAsDate(date);
+  return entries.filter((e) => isEntryInDay(e, dayStart, dayEnd));
+}
+
+// Helper to update button display with time and highlight
+function updateButtonDisplay(btn, label, timeStr = null, highlight = false) {
+  if (!btn) return;
+  const opacity = highlight ? '0.9' : '0.8';
+  btn.style.background = highlight ? 'var(--primary)' : '';
+  btn.style.color = highlight ? '#fff' : '';
+  btn.innerHTML = timeStr ? `${label}<br><small style="font-size: 11px; opacity: ${opacity};">${timeStr}</small>` : label;
+}
+
+// Long-press detection
+let longPressTimer = null;
+let longPressData = null;
+
+function handleLongPressStart(type, value, btn, event) {
+  event.preventDefault();
+  longPressTimer = setTimeout(() => {
+    // Show time picker modal
+    longPressData = { type, value, btn };
+    showTimePicker();
+  }, 500); // 500ms for long press
+}
+
+function handleLongPressEnd() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+function showTimePicker() {
+  const modal = document.getElementById('time-picker-modal');
+  const input = document.getElementById('custom-time');
+
+  // Set default to current time in local timezone
+  // datetime-local expects format: YYYY-MM-DDTHH:mm
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  input.value = `${year}-${month}-${day}T${hours}:${minutes}`;
+
+  modal.classList.add('show');
+}
+
+function hideTimePicker() {
+  const modal = document.getElementById('time-picker-modal');
+  modal.classList.remove('show');
+  longPressData = null;
+}
+
+// Helper to find last sleep start entry
+function findLastSleepStart(entries) {
+  return [...entries].reverse().find((e) => !e.deleted && e.type === 'sleep' && (e.value === 'sleeping' || e.value === 'nap'));
+}
+
+async function save(type, value, btn, customTimestamp = null) {
+  const ts = customTimestamp || nowIso();
+  const eventTime = new Date(ts);
+
+  // Add animation
+  if (btn) {
+    btn.classList.add('fading');
+    setTimeout(() => {
+      btn.classList.remove('fading');
+    }, 400);
+  }
+
+  // Persist this single entry
+  await addEntry(type, value, ts);
+
+  updateTimestamp('Saved: ' + eventTime.toLocaleTimeString());
+  updateDailyReport();
+  updateButtonStates();
+}
+
+async function saveWithCustomTime() {
+  const input = document.getElementById('custom-time');
+  const customTime = new Date(input.value);
+
+  if (!customTime || isNaN(customTime.getTime())) {
+    alert('Please select a valid time');
+    return;
+  }
+
+  const { type, value, btn } = longPressData;
+  await save(type, value, btn, customTime.toISOString());
+  hideTimePicker();
+}
+
+// Toggle entry deleted status
+async function toggleEntryDeleted(entryId, shouldDelete) {
+  if (!db) await initDB();
+
+  const transaction = db.transaction(['entries'], 'readwrite');
+  const objectStore = transaction.objectStore('entries');
+
+  return new Promise((resolve, reject) => {
+    const getRequest = objectStore.get(entryId);
+    getRequest.onsuccess = () => {
+      const entry = getRequest.result;
+      if (entry && entry.deleted !== shouldDelete) {
+        entry.deleted = shouldDelete;
+        entry.updated = new Date().toISOString();
+        const updateRequest = objectStore.put(entry);
+        updateRequest.onsuccess = () => {
+          // Sync to server if connected
+          if (window.syncClient && window.syncClient.isConnected() && entry.syncId) {
+            if (shouldDelete) {
+              window.syncClient.sendEntry('delete', { id: entry.syncId });
+            } else {
+              window.syncClient.sendEntry('update', {
+                id: entry.syncId,
+                ts: new Date(entry.ts).getTime(),
+                type: entry.type,
+                value: entry.value,
+                deleted: entry.deleted
+              });
+            }
+          }
+          resolve(entry);
+        };
+        updateRequest.onerror = () => reject(updateRequest.error);
+      } else {
+        resolve(null);
+      }
+    };
+    getRequest.onerror = () => reject(getRequest.error);
+  });
+}
+
+// Simple entry functions
+async function deleteEntry(id) {
+  return toggleEntryDeleted(id, true);
+}
+
+async function undeleteEntry(id) {
+  return toggleEntryDeleted(id, false);
+}
+
+function updateTimestamp(text) {
+  const stamp = document.getElementById('laststamp');
+  if (stamp) stamp.textContent = text;
+}
+
+async function saveNote(e) {
+  const v = e.target.value.trim();
+  if (!v) return;
+  await save('note', v);
+  e.target.value = '';
+}
+
+async function downloadCSV() {
+  if (!db) await initDB();
+
+  // Load ALL entries from the database (no date filter)
+  const transaction = db.transaction(['entries'], 'readonly');
+  const objectStore = transaction.objectStore('entries');
+  const request = objectStore.getAll();
+
+  const entries = await new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+
+  if (!entries || entries.length === 0) {
+    alert('No data to export');
+    return;
+  }
+
+  // Filter deleted entries based on checkbox state
+  const hideDeleted = document.getElementById('hide-deleted-filter')?.checked ?? true;
+  const exportEntries = hideDeleted ? entries.filter((e) => !e.deleted) : entries;
+
+  if (exportEntries.length === 0) {
+    alert('No data to export (all entries are deleted)');
+    return;
+  }
+
+  const header = 'Timestamp,Type,Value';
+  const rows = exportEntries.map((e) => {
+    // Convert UTC timestamp to ISO format with local timezone offset
+    const date = new Date(e.ts);
+    const offset = -date.getTimezoneOffset();
+    const sign = offset >= 0 ? '+' : '-';
+    const hours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+    const mins = String(Math.abs(offset) % 60).padStart(2, '0');
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hour = String(date.getHours()).padStart(2, '0');
+    const minute = String(date.getMinutes()).padStart(2, '0');
+    const second = String(date.getSeconds()).padStart(2, '0');
+
+    const localTime = `${year}-${month}-${day}T${hour}:${minute}:${second}${sign}${hours}:${mins}`;
+    return `"${localTime}","${e.type}","${e.value}"`;
+  });
+  const csv = [header, ...rows].join('\n');
+
+  const blob = new Blob([csv], {
+    type: 'text/csv;charset=utf-8;',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'baby_log_' + new Date().toISOString().split('T')[0] + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function importCSV() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.csv';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const text = await file.text();
+    const lines = text.trim().split('\n');
+    const header = lines[0];
+
+    // Skip header row
+    let imported = 0;
+    let skipped = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+
+      // Parse CSV (handle quoted values)
+      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)"/);
+      if (!match) {
+        skipped++;
+        continue;
+      }
+
+      const [, timestamp, type, value] = match;
+      const ts = new Date(timestamp).toISOString();
+
+      // Check if entry already exists
+      const exists = await checkEntryExists(ts, type, value);
+      if (exists) {
+        skipped++;
+        continue;
+      }
+
+      await addEntry(type, value, ts);
+      imported++;
+    }
+
+    alert(`Imported ${imported} entries, skipped ${skipped} duplicates`);
+    updateDailyReport();
+  };
+  input.click();
+}
+
+async function checkEntryExists(ts, type, value) {
+  if (!db) await initDB();
+  const transaction = db.transaction(['entries'], 'readonly');
+  const objectStore = transaction.objectStore('entries');
+  const index = objectStore.index('ts');
+  const request = index.getAll(IDBKeyRange.only(ts));
+
+  const entries = await new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+
+  return entries.some((e) => e.type === type && e.value === value);
+}
+
+async function downloadHourlyReport() {
+  if (!db) await initDB();
+
+  // Load ALL entries from the database
+  const transaction = db.transaction(['entries'], 'readonly');
+  const objectStore = transaction.objectStore('entries');
+  const request = objectStore.getAll();
+
+  const entries = await new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+
+  if (!entries || entries.length === 0) {
+    alert('No data to export');
+    return;
+  }
+
+  // Filter out deleted entries
+  const activeEntries = entries.filter((e) => !e.deleted);
+
+  // Group entries by date
+  const entriesByDate = {};
+  activeEntries.forEach((e) => {
+    const date = new Date(e.ts);
+    const dateKey = `${date.getDate().toString().padStart(2, '0')}/${(date.getMonth() + 1).toString().padStart(2, '0')}/${date
+      .getFullYear()
+      .toString()
+      .slice(-2)}`;
+    if (!entriesByDate[dateKey]) entriesByDate[dateKey] = [];
+    entriesByDate[dateKey].push(e);
+  });
+
+  // Build the hourly report
+  const header =
+    'DATE\tTIME\tFood and Fluids Taken\tSleep\tSleep routine and how long it took to get to sleep once put down\tActivity\tWet Nappy\tDirty Nappy\tTOTAL SLEEP hh:mm\tComments';
+  const rows = [];
+
+  // Sort dates
+  const sortedDates = Object.keys(entriesByDate).sort((a, b) => {
+    const [da, ma, ya] = a.split('/').map(Number);
+    const [db, mb, yb] = b.split('/').map(Number);
+    return new Date(2000 + ya, ma - 1, da) - new Date(2000 + yb, mb - 1, db);
+  });
+
+  for (const dateKey of sortedDates) {
+    const dayEntries = entriesByDate[dateKey];
+
+    // Group by hour
+    const hourlyData = {};
+    for (let h = 0; h < 24; h++) {
+      hourlyData[h] = {
+        feed: [],
+        sleep: [],
+        sleepRoutine: [],
+        activity: [],
+        wet: false,
+        dirty: false,
+        comments: [],
+      };
+    }
+
+    // Track sleep periods for duration calculation
+    let sleepStart = null;
+    let totalSleepMs = 0;
+    const sleepByHour = {};
+
+    // Sort entries by time
+    dayEntries.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+    dayEntries.forEach((e) => {
+      const date = new Date(e.ts);
+      const hour = date.getHours();
+
+      if (e.type === 'feed') {
+        hourlyData[hour].feed.push(e.value);
+      } else if (e.type === 'sleep') {
+        if (e.value === 'sleeping' || e.value === 'nap') {
+          sleepStart = date;
+          const sleepType = e.value === 'nap' ? 'nap' : 'sleep';
+          hourlyData[hour].sleep.push(sleepType);
+        } else if (e.value === 'awake' && sleepStart) {
+          // Calculate sleep duration
+          const duration = date - sleepStart;
+          totalSleepMs += duration;
+
+          // Distribute sleep across hours
+          let current = new Date(sleepStart);
+          while (current < date) {
+            const h = current.getHours();
+            const nextHour = new Date(current);
+            nextHour.setHours(h + 1, 0, 0, 0);
+            const endOfPeriod = nextHour < date ? nextHour : date;
+            const periodMs = endOfPeriod - current;
+            sleepByHour[h] = (sleepByHour[h] || 0) + periodMs;
+            current = nextHour;
+          }
+          sleepStart = null;
+        } else if (e.value === 'grizzle') {
+          hourlyData[hour].comments.push('grizzle');
+        }
+      } else if (e.type === 'nappy') {
+        if (e.value === 'wet') hourlyData[hour].wet = true;
+        if (e.value === 'dirty') hourlyData[hour].dirty = true;
+      } else if (e.type === 'soothe' || e.type === '5s') {
+        hourlyData[hour].sleepRoutine.push(e.value);
+      } else if (e.type === 'note') {
+        hourlyData[hour].comments.push(e.value);
+      } else {
+        hourlyData[hour].activity.push(`${e.type}: ${e.value}`);
+      }
+    });
+
+    // Generate rows for each hour that has data
+    let isFirstRowOfDay = true;
+    for (let h = 0; h < 24; h++) {
+      const data = hourlyData[h];
+      const hasData =
+        data.feed.length > 0 ||
+        data.sleep.length > 0 ||
+        data.sleepRoutine.length > 0 ||
+        data.activity.length > 0 ||
+        data.wet ||
+        data.dirty ||
+        data.comments.length > 0 ||
+        sleepByHour[h];
+
+      if (!hasData) continue;
+
+      const sleepMs = sleepByHour[h] || 0;
+      const sleepMins = Math.round(sleepMs / 60000);
+      const sleepHrs = Math.floor(sleepMins / 60);
+      const sleepRemMins = sleepMins % 60;
+      const sleepStr = sleepMs > 0 ? `${sleepHrs}:${sleepRemMins.toString().padStart(2, '0')}` : '0:00';
+
+      const row = [
+        isFirstRowOfDay ? dateKey : '',
+        `${h.toString().padStart(2, '0')}:00`,
+        data.feed.join(', '),
+        data.sleep.join(', '),
+        data.sleepRoutine.join(', '),
+        data.activity.join(', '),
+        data.wet ? 'yes' : '',
+        data.dirty ? 'yes' : '',
+        sleepStr,
+        data.comments.join(', '),
+      ];
+      rows.push(row.join('\t'));
+      isFirstRowOfDay = false;
+    }
+  }
+
+  const tsv = [header, ...rows].join('\n');
+
+  const blob = new Blob([tsv], { type: 'text/tab-separated-values;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'baby_hourly_report_' + new Date().toISOString().split('T')[0] + '.tsv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function updateButtonStates() {
+  if (!db) await initDB();
+
+  // Load today's entries
+  const today = new Date();
+  const { start, end } = getDayBounds(today);
+  const transaction = db.transaction(['entries'], 'readonly');
+  const objectStore = transaction.objectStore('entries');
+  const request = objectStore.index('timestamp').getAll(IDBKeyRange.bound(start, end));
+
+  const allEntries = await new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+
+  if (!allEntries || allEntries.length === 0) {
+    // Reset all buttons to default state when no entries
+    buttonGroups.forEach((group) => {
+      group.buttons.forEach((btn) => {
+        const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
+        if (button) updateButtonDisplay(button, btn.label, null, false);
+      });
+    });
+    return;
+  }
+
+  // Filter out deleted entries for button states
+  const activeEntries = allEntries.filter((e) => !e.deleted);
+  if (activeEntries.length === 0) return;
+
+  // Process each group based on its config
+  buttonGroups.forEach((group) => {
+    const categoryEntries = activeEntries.filter((e) => e.type === group.category);
+    const lastEntry = [...categoryEntries].pop();
+
+    // Determine stateful values: explicit stateful OR implicit from showTiming
+    const statefulValues = group.stateful
+      ? (Array.isArray(group.stateful) ? group.stateful : [group.stateful])
+      : group.showTiming
+        ? (Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming])
+        : null;
+
+    // Handle showTiming: show elapsed time on specific button(s)
+    // Skip if stateful is also defined (stateful handler will show timing)
+    if (group.showTiming && !group.stateful) {
+      const timingValues = Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming];
+      const isOn = lastEntry && timingValues.includes(lastEntry.value);
+      const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
+
+      group.buttons.forEach((btn) => {
+        const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
+        if (!button) return;
+
+        const isOnButton = timingValues.includes(btn.value);
+        if (lastEntry) {
+          // Show timing on the active state button, highlight appropriately
+          const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
+          updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
+        } else {
+          // No entries - show timing buttons as inactive
+          const buttonConfig = group.buttons.find((b) => b.value === btn.value);
+          updateButtonDisplay(button, buttonConfig?.label || btn.value, null, false);
+        }
+      });
+    }
+
+    // Handle stateful: highlight buttons based on current state
+    if (group.stateful) {
+      const onValues = Array.isArray(group.stateful) ? group.stateful : [group.stateful];
+      const isOn = lastEntry && onValues.includes(lastEntry.value);
+      const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
+
+      group.buttons.forEach((btn) => {
+        const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
+        if (!button) return;
+
+        const isOnButton = onValues.includes(btn.value);
+        if (lastEntry) {
+          // Show timing on the active state button
+          const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
+          updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
+        } else {
+          // No entries - default to "off" state (first non-on button is active)
+          updateButtonDisplay(button, btn.label, null, !isOnButton);
+        }
+      });
+    }
+  });
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && document.activeElement?.id === 'notes') {
+    saveNote({ target: document.activeElement });
+  }
+});
+
+// Initialize database on load
+initDB();
+
+// Initialize WebSocket sync (after short delay to ensure page is ready)
+setTimeout(() => initWebSocketSync(), 100);
+
+// Update button states every minute to keep elapsed times current
+setInterval(() => {
+  updateButtonStates();
+}, 60000); // 60000ms = 1 minute
+
+// Daily Report Functions
+let currentReportDate = new Date();
+
+function setReportDate(date) {
+  // Parse date string as local date, not UTC
+  if (typeof date === 'string') {
+    const parts = date.split('-');
+    currentReportDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  } else {
+    currentReportDate = new Date(date);
+  }
+  updateDailyReport();
+}
+
+function changeReportDate(days) {
+  currentReportDate.setDate(currentReportDate.getDate() + days);
+  // Format date as YYYY-MM-DD for the date input
+  const year = currentReportDate.getFullYear();
+  const month = String(currentReportDate.getMonth() + 1).padStart(2, '0');
+  const day = String(currentReportDate.getDate()).padStart(2, '0');
+  document.getElementById('report-date').value = `${year}-${month}-${day}`;
+  updateDailyReport();
+}
+
+function goToToday() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  setReportDate(`${year}-${month}-${day}`);
+}
+
+// Button Configuration - Default config
+const defaultButtonGroups = [
+  {
+    category: 'feed',
+    showTiming: 'bf',  // Show timing on button with this value
+    countDaily: 'bf',  // Count this value in daily stats
+    buttons: [
+      { value: 'bf', label: 'Feed', emoji: '🤱' },
+      { value: 'play', label: 'Play', emoji: '🎾' },
+      { value: 'spew', label: 'Spew', emoji: '🤮' },
+    ],
+  },
+  {
+    category: 'sleep',
+    stateful: ['sleeping', 'nap'],  // These values = "on" state
+    buttons: [
+      { value: 'sleeping', label: 'Sleeping', emoji: '' },
+      { value: 'nap', label: 'Nap', emoji: '' },
+      { value: 'awake', label: 'Awake', emoji: '' },
+      { value: 'grizzle', label: 'Grizzle', emoji: '' },
+    ],
+  },
+  {
+    category: 'nappy',
+    countDaily: ['wet', 'dirty'],  // Count each separately
+    buttons: [
+      { value: 'wet', label: 'Wet', emoji: '💧' },
+      { value: 'dirty', label: 'Dirty', emoji: '💩' },
+    ],
+  },
+  {
+    category: 'soothe',
+    buttons: [
+      { value: 'pram', label: 'Pram', emoji: '🎢' },
+      { value: 'rocking', label: 'Rocking', emoji: '🪑' },
+      { value: 'wearing', label: 'Wearing', emoji: '🤗' },
+      { value: 'feed-to-sleep', label: 'Feed to Sleep', emoji: '🍼😴' },
+    ],
+  },
+  {
+    category: '5s',
+    buttons: [
+      { value: 'swaddle', label: 'Swaddle', emoji: '🌯' },
+      { value: 'side-lying', label: 'Side/Stomach', emoji: '🛏️' },
+      { value: 'shush', label: 'Shush', emoji: '🤫' },
+      { value: 'swing', label: 'Swing', emoji: '🎢' },
+      { value: 'suck', label: 'Suck', emoji: '🍭' },
+    ],
+  },
+];
+
+// Migrate old format (button.type) to new format (group.category)
+function migrateButtonGroups(groups) {
+  return groups.map((group) => {
+    // Already migrated if category exists
+    if (group.category !== undefined) {
+      return group;
+    }
+    // Derive category from first button's type
+    const category = group.buttons.length > 0 ? group.buttons[0].type : 'custom';
+    return {
+      category,
+      buttons: group.buttons.map(({ type, ...rest }) => rest),
+    };
+  });
+}
+
+// Load config from localStorage or use default
+function loadButtonGroups() {
+  const saved = localStorage.getItem('babytrack-buttons');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      return migrateButtonGroups(parsed);
+    } catch (e) {
+      console.error('Failed to parse saved button config:', e);
+    }
+  }
+  return JSON.parse(JSON.stringify(defaultButtonGroups)); // Deep copy
+}
+
+let buttonGroups = loadButtonGroups();
+
+// Rebuild emoji map from button groups
+function rebuildEmojiMap() {
+  // Clear existing
+  for (const key in emojiMap) {
+    if (key !== 'note') delete emojiMap[key];
+  }
+  // Rebuild from button groups
+  buttonGroups.forEach((group) => {
+    group.buttons.forEach((btn) => {
+      if (!emojiMap[group.category]) emojiMap[group.category] = {};
+      emojiMap[group.category][btn.value] = btn.emoji || '•';
+    });
+  });
+}
+
+// Config Modal Functions
+function openConfigModal() {
+  const container = document.getElementById('config-groups');
+  container.innerHTML = '';
+
+  buttonGroups.forEach((group, groupIndex) => {
+    const groupDiv = document.createElement('div');
+    groupDiv.className = 'config-group';
+    groupDiv.dataset.groupIndex = groupIndex;
+
+    groupDiv.innerHTML = `
+          <div class="config-group-header">
+            <label>Category: <input type="text" value="${group.category}" placeholder="category" 
+                   onchange="updateGroupCategory(${groupIndex}, this.value)" style="width: 100px;"></label>
+            <button class="add-btn" onclick="addButtonToGroup(${groupIndex})">+ Add Button</button>
+          </div>
+          <div class="config-buttons" data-group="${groupIndex}"></div>
+        `;
+
+    const buttonsContainer = groupDiv.querySelector('.config-buttons');
+    group.buttons.forEach((btn, btnIndex) => {
+      buttonsContainer.appendChild(createButtonRow(groupIndex, btnIndex, btn));
+    });
+
+    container.appendChild(groupDiv);
+  });
+
+  const addGroupBtn = document.createElement('button');
+  addGroupBtn.className = 'add-btn';
+  addGroupBtn.style.width = '100%';
+  addGroupBtn.textContent = '+ Add New Button Group';
+  addGroupBtn.onclick = addNewGroup;
+  container.appendChild(addGroupBtn);
+
+  document.getElementById('config-modal').classList.add('show');
+}
+
+function createButtonRow(groupIndex, btnIndex, btn) {
+  const row = document.createElement('div');
+  row.className = 'config-button-row';
+  row.innerHTML = `
+        <input type="text" class="emoji-input" value="${btn.emoji || ''}" placeholder="😀" maxlength="4" 
+               onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'emoji', this.value)">
+        <input type="text" value="${btn.label}" placeholder="Label" 
+               onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'label', this.value)">
+        <label>
+          <input type="checkbox" ${btn.timing ? 'checked' : ''} 
+                 onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'timing', this.checked)">
+          ⏲️
+        </label>
+        <label>
+          <input type="checkbox" ${btn.counted ? 'checked' : ''} 
+                 onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'counted', this.checked)">
+          📊
+        </label>
+        <button class="remove-btn" onclick="removeButton(${groupIndex}, ${btnIndex})">×</button>
+      `;
+  return row;
+}
+
+function updateConfigButton(groupIndex, btnIndex, field, value) {
+  if (field === 'label') {
+    // Also update value to be a slug of the label
+    buttonGroups[groupIndex].buttons[btnIndex].value = value.toLowerCase().replace(/\s+/g, '-');
+  }
+  buttonGroups[groupIndex].buttons[btnIndex][field] = value;
+}
+
+function updateGroupCategory(groupIndex, value) {
+  buttonGroups[groupIndex].category = value;
+}
+
+function updateGroupOption(groupIndex, option, value) {
+  if (value === '') {
+    delete buttonGroups[groupIndex][option];
+  } else {
+    buttonGroups[groupIndex][option] = value;
+  }
+}
+
+function updateGroupOptionMulti(groupIndex, option, selectEl) {
+  const selected = Array.from(selectEl.selectedOptions).map((o) => o.value);
+  if (selected.length === 0) {
+    delete buttonGroups[groupIndex][option];
+  } else {
+    buttonGroups[groupIndex][option] = selected;
+  }
+}
+
+function addButtonToGroup(groupIndex) {
+  buttonGroups[groupIndex].buttons.push({
+    value: 'new',
+    label: 'New',
+    emoji: '⭐',
+  });
+  openConfigModal(); // Refresh
+}
+
+function removeButton(groupIndex, btnIndex) {
+  buttonGroups[groupIndex].buttons.splice(btnIndex, 1);
+  // Remove group if empty
+  if (buttonGroups[groupIndex].buttons.length === 0) {
+    buttonGroups.splice(groupIndex, 1);
+  }
+  openConfigModal(); // Refresh
+}
+
+function addNewGroup() {
+  buttonGroups.push({
+    category: 'custom',
+    buttons: [{ value: 'new', label: 'New Button', emoji: '⭐' }],
+  });
+  openConfigModal(); // Refresh
+}
+
+function closeConfigModal() {
+  // Reload from storage to discard changes
+  buttonGroups = loadButtonGroups();
+  document.getElementById('config-modal').classList.remove('show');
+}
+
+function saveConfig() {
+  localStorage.setItem('babytrack-buttons', JSON.stringify(buttonGroups));
+  updateConfigTimestamp(); // Track when config was last modified
+  rebuildEmojiMap();
+  renderButtons();
+  document.getElementById('config-modal').classList.remove('show');
+  updateDailyReport(); // Refresh graphs with new emoji map
+}
+
+function resetConfig() {
+  if (confirm("Reset all buttons to default? This will remove any custom buttons you've added.")) {
+    localStorage.removeItem('babytrack-buttons');
+    localStorage.removeItem('babytrack-config-updated');
+    buttonGroups = loadButtonGroups();
+    rebuildEmojiMap();
+    renderButtons();
+    document.getElementById('config-modal').classList.remove('show');
+    updateDailyReport();
+  }
+}
+
+// ==================== WebSocket Realtime Sync ====================
+
+// Initialize WebSocket sync client
+function initWebSocketSync() {
+  // Only initialize if SyncClient is available and we have a family parameter
+  if (typeof SyncClient === 'undefined') {
+    console.log('[WS Sync] SyncClient not loaded, skipping WebSocket sync');
+    return;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const familyId = params.get('family');
+
+  if (!familyId) {
+    console.log('[WS Sync] No family ID in URL, skipping WebSocket sync');
+    return;
+  }
+
+  console.log('[WS Sync] Initializing WebSocket sync for family:', familyId);
+
+  window.syncClient = new SyncClient({
+    onConnect: () => {
+      console.log('[WS Sync] Connected');
+      updateWsSyncIndicator('connected');
+    },
+    onDisconnect: () => {
+      console.log('[WS Sync] Disconnected');
+      updateWsSyncIndicator('disconnected');
+    },
+    onInit: async (entries, config) => {
+      console.log('[WS Sync] Received init with', entries.length, 'entries');
+      await mergeRemoteEntries(entries);
+      if (config && Object.keys(config).length > 0) {
+        // Could merge config here if needed
+      }
+      updateDailyReport();
+    },
+    onEntry: async (action, entry) => {
+      console.log('[WS Sync] Received entry:', action, entry);
+      await handleRemoteEntry(action, entry);
+      updateDailyReport();
+    },
+    onPresence: (members) => {
+      console.log('[WS Sync] Presence update:', members);
+      updatePresenceIndicator(members);
+    },
+    onError: (err) => {
+      console.error('[WS Sync] Error:', err);
+    }
+  });
+
+  window.syncClient.connect();
+}
+
+// Update sync status indicator (console only)
+function updateWsSyncIndicator(status) {
+  if (status === 'connected') {
+    console.log('[Sync] 🟢 Connected');
+  } else {
+    console.log('[Sync] 🔴 Offline');
+  }
+}
+
+// Update presence indicator (console only)
+function updatePresenceIndicator(members) {
+  if (members.length > 0) {
+    console.log('[Presence] 👥 Online:', members.join(', '));
+  }
+}
+
+// Merge remote entries into local IndexedDB
+async function mergeRemoteEntries(remoteEntries) {
+  if (!db) await initDB();
+
+  const transaction = db.transaction(['entries'], 'readwrite');
+  const objectStore = transaction.objectStore('entries');
+
+  for (const remote of remoteEntries) {
+    // Check if we already have this entry by syncId
+    const existingEntries = await new Promise((resolve, reject) => {
+      const request = objectStore.getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    const existing = existingEntries.find(e => e.syncId === remote.id);
+
+    if (existing) {
+      // Update if remote is newer
+      const remoteUpdated = remote.updated_at || 0;
+      const localUpdated = new Date(existing.updated).getTime();
+
+      if (remoteUpdated > localUpdated) {
+        existing.ts = new Date(remote.ts).toISOString();
+        existing.type = remote.type;
+        existing.value = remote.value;
+        existing.deleted = remote.deleted;
+        existing.updated = new Date(remoteUpdated).toISOString();
+        objectStore.put(existing);
+      }
+    } else {
+      // Add new entry
+      const newEntry = {
+        syncId: remote.id,
+        ts: new Date(remote.ts).toISOString(),
+        type: remote.type,
+        value: remote.value,
+        deleted: remote.deleted || false,
+        updated: new Date(remote.updated_at || Date.now()).toISOString()
+      };
+      objectStore.add(newEntry);
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+// Handle a single remote entry update
+async function handleRemoteEntry(action, entry) {
+  if (!entry) return;
+
+  if (action === 'delete') {
+    // Find and mark as deleted
+    if (!db) await initDB();
+    const transaction = db.transaction(['entries'], 'readwrite');
+    const objectStore = transaction.objectStore('entries');
+
+    const allEntries = await new Promise((resolve, reject) => {
+      const request = objectStore.getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    const existing = allEntries.find(e => e.syncId === entry.id);
+    if (existing && !existing.deleted) {
+      existing.deleted = true;
+      existing.updated = new Date().toISOString();
+      objectStore.put(existing);
+    }
+  } else {
+    // Add or update
+    await mergeRemoteEntries([entry]);
+  }
+}
+
+// ==================== End WebSocket Realtime Sync ====================
+
+// Create emoji lookup map
+const emojiMap = {};
+buttonGroups.forEach((group) => {
+  group.buttons.forEach((btn) => {
+    if (!emojiMap[group.category]) emojiMap[group.category] = {};
+    emojiMap[group.category][btn.value] = btn.emoji || '•';
+  });
+});
+// Add emoji for notes
+emojiMap['note'] = { '': '📝' };
+
+// Generate buttons dynamically
+function renderButtons() {
+  const container = document.querySelector('.container');
+  const headerRow = container.querySelector('.header-row');
+
+  // Remove existing button cards
+  const existingCards = container.querySelectorAll('.card:not(#daily-report .card)');
+  existingCards.forEach((card) => {
+    if (!card.querySelector('#notes')) {
+      card.remove();
+    }
+  });
+
+  // Insert button groups after the header row (in reverse so first group is at top)
+  [...buttonGroups].reverse().forEach((group) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    group.buttons.forEach((btn) => {
+      const button = document.createElement('button');
+      button.className = 'action';
+      button.dataset.type = group.category;
+      button.dataset.value = btn.value;
+      button.textContent = btn.label;
+      button.onclick = function () {
+        save(group.category, btn.value, this);
+      };
+      button.onpointerdown = function (e) {
+        handleLongPressStart(group.category, btn.value, this, e);
+      };
+      button.onpointerup = handleLongPressEnd;
+      button.onpointercancel = handleLongPressEnd;
+
+      row.appendChild(button);
+    });
+
+    card.appendChild(row);
+    headerRow.insertAdjacentElement('afterend', card);
+  });
+}
+
+// Render buttons on load (moved to DOM ready below)
+
+async function updateDailyReport() {
+  const allEntries = await loadEntriesByDate(currentReportDate);
+
+  // Filter out deleted entries for graphs/stats only
+  const activeEntries = allEntries.filter((e) => !e.deleted);
+
+  // Filter to only entries within the current day
+  const entriesInDay = filterEntriesInDay(allEntries, currentReportDate);
+  const activeEntriesInDay = filterEntriesInDay(activeEntries, currentReportDate);
+
+  // Calculate statistics (uses activeEntries for cross-midnight sleep)
+  const stats = calculateDailyStats(activeEntries);
+  updateStatsDisplay(stats);
+
+  // Display functions - graphs use active entries only, log uses all entries
+  updateHourlyGrid(activeEntriesInDay);
+  updateSleepAttempts(activeEntriesInDay);
+  updateRecentEvents(entriesInDay); // Pass all entries including deleted
+
+  // Timeline needs activeEntries to show cross-midnight sleep properly
+  drawTimeline(activeEntries);
+}
+
+function calculateDailyStats(entries) {
+  const sleepEvents = entries.filter((e) => e.type === 'sleep');
+
+  // Get day boundaries for clipping sleep periods
+  const { dayStart, dayEnd } = getDayBoundsAsDate(currentReportDate);
+
+  // Build dynamic counts based on group config
+  const counts = {};
+  buttonGroups.forEach((group) => {
+    if (group.countDaily) {
+      const values = Array.isArray(group.countDaily) ? group.countDaily : [group.countDaily];
+      values.forEach((val) => {
+        const count = entries.filter((e) => {
+          return e.type === group.category && e.value === val && isEntryInDay(e, dayStart, dayEnd);
+        }).length;
+        counts[`${group.category}-${val}`] = {
+          count,
+          label: group.buttons.find((b) => b.value === val)?.label || val,
+          category: group.category,
+          value: val,
+        };
+      });
+    }
+  });
+
+  let totalSleepMinutes = 0;
+  let currentSleepStart = null;
+
+  // Check if day starts during a sleep period (sleep graph is special-cased)
+  const eventsBeforeDay = sleepEvents.filter((e) => new Date(e.ts) < dayStart);
+  if (eventsBeforeDay.length > 0) {
+    const lastEventBeforeDay = eventsBeforeDay[eventsBeforeDay.length - 1];
+    if (lastEventBeforeDay.value === 'sleeping' || lastEventBeforeDay.value === 'nap') {
+      currentSleepStart = new Date(lastEventBeforeDay.ts);
+    }
+  }
+
+  sleepEvents.forEach((event, i) => {
+    if (event.value === 'sleeping' || event.value === 'nap') {
+      currentSleepStart = new Date(event.ts);
+    } else if (event.value === 'awake' && currentSleepStart) {
+      const awakeTime = new Date(event.ts);
+
+      // Clip sleep period to the current day's boundaries
+      const clippedStart = currentSleepStart < dayStart ? dayStart : currentSleepStart;
+      const clippedEnd = awakeTime > dayEnd ? dayEnd : awakeTime;
+
+      // Only count if the clipped period is within the day
+      if (clippedEnd > clippedStart) {
+        const duration = (clippedEnd - clippedStart) / 1000 / 60;
+        totalSleepMinutes += duration;
+      }
+      currentSleepStart = null;
+    }
+  });
+
+  // Handle ongoing sleep that hasn't ended yet
+  if (currentSleepStart) {
+    const now = new Date();
+    const reportDate = currentReportDate;
+    const isToday = reportDate.toDateString() === now.toDateString();
+
+    if (isToday) {
+      // Clip to current time if viewing today
+      const clippedStart = currentSleepStart < dayStart ? dayStart : currentSleepStart;
+      const clippedEnd = now > dayEnd ? dayEnd : now;
+
+      if (clippedEnd > clippedStart) {
+        const duration = (clippedEnd - clippedStart) / 1000 / 60;
+        totalSleepMinutes += duration;
+      }
+    } else {
+      // For past days, assume sleep continued until end of day
+      const clippedStart = currentSleepStart < dayStart ? dayStart : currentSleepStart;
+      if (dayEnd > clippedStart) {
+        const duration = (dayEnd - clippedStart) / 1000 / 60;
+        totalSleepMinutes += duration;
+      }
+    }
+  }
+
+  const hours = Math.floor(totalSleepMinutes / 60);
+  const minutes = Math.round(totalSleepMinutes % 60);
+
+  return {
+    totalSleep: `${hours}h ${minutes}m`,
+    counts: {}, // Dynamic counts removed
+  };
+}
+
+function updateStatsDisplay(stats) {
+  // Build stat data dynamically from config
+  const statData = [
+    {
+      id: 'stat-sleep',
+      value: stats.totalSleep,
+      label: 'Total Sleep',
+    },
+  ];
+
+  // Ensure stats grid has correct elements
+  const statsGrid = document.querySelector('.stats-grid');
+  if (statsGrid) {
+    // Create missing stat cards
+    statData.forEach((stat) => {
+      if (!document.getElementById(stat.id)) {
+        const card = document.createElement('div');
+        card.className = 'stat-card';
+        card.innerHTML = `
+              <div class="label">${stat.label}</div>
+              <div class="value" id="${stat.id}">0</div>
+            `;
+        statsGrid.appendChild(card);
+      }
+    });
+
+    // Remove stat cards that are no longer in config
+    const validIds = new Set(statData.map((s) => s.id));
+    Array.from(statsGrid.querySelectorAll('.stat-card')).forEach((card) => {
+      const valueEl = card.querySelector('.value');
+      if (valueEl && !validIds.has(valueEl.id)) {
+        card.remove();
+      }
+    });
+  }
+
+  statData.forEach((stat) => {
+    const element = d3.select(`#${stat.id}`);
+
+    if (stat.isNumeric) {
+      // Animate numeric values
+      const currentValue = parseInt(element.text()) || 0;
+      const targetValue = stat.value;
+
+      if (currentValue !== targetValue) {
+        element
+          .transition()
+          .duration(500)
+          .tween('text', function () {
+            const i = d3.interpolateNumber(currentValue, targetValue);
+            return function (t) {
+              this.textContent = Math.round(i(t));
+            };
+          })
+          .on('start', function () {
+            d3.select(this).style('color', 'var(--primary)');
+          })
+          .on('end', function () {
+            d3.select(this).transition().duration(200).style('color', '');
+          });
+      }
+    } else {
+      // Simple text update for non-numeric values
+      if (element.text() !== stat.value) {
+        element
+          .transition()
+          .duration(200)
+          .style('opacity', 0.5)
+          .transition()
+          .duration(200)
+          .style('opacity', 1)
+          .on('start', function () {
+            this.textContent = stat.value;
+          });
+      }
+    }
+  });
+}
+
+function updateHourlyGrid(entries) {
+  for (let hour = 0; hour < 24; hour++) {
+    const hourEntries = entries.filter((e) => {
+      const entryHour = new Date(e.ts).getHours();
+      return entryHour === hour;
+    });
+
+    const indicators = ['feed', 'sleep', 'wet', 'dirty'];
+    indicators.forEach((type) => {
+      const el = document.getElementById(`hour-${hour}-${type}`);
+      if (el) {
+        const hasEvent = hourEntries.some((e) => {
+          if (type === 'feed') return e.type === 'feed' && e.value === 'bf';
+          if (type === 'sleep') return e.type === 'sleep' && (e.value === 'sleeping' || e.value === 'nap');
+          if (type === 'wet' || type === 'dirty') return e.type === 'nappy' && e.value === type;
+          return e.type === type;
+        });
+        el.style.opacity = hasEvent ? '1' : '0.2';
+      }
+    });
+  }
+}
+
+function updateSleepAttempts(entries) {
+  const sleepEvents = entries.filter((e) => e.type === 'sleep');
+  const sootheEvents = entries.filter((e) => e.type === 'soothe' || e.type === '5s');
+
+  const attempts = [];
+  let currentAttempt = null;
+
+  sleepEvents.forEach((event, i) => {
+    if (event.value === 'sleeping' || event.value === 'nap') {
+      if (currentAttempt) {
+        attempts.push(currentAttempt);
+      }
+      currentAttempt = {
+        start: new Date(event.ts),
+        type: event.value,
+        soothe: [],
+      };
+    } else if (event.value === 'awake' && currentAttempt) {
+      currentAttempt.end = new Date(event.ts);
+      const duration = (currentAttempt.end - currentAttempt.start) / 1000 / 60;
+      currentAttempt.success = duration > 15; // More than 15 minutes = success
+      attempts.push(currentAttempt);
+      currentAttempt = null;
+    }
+  });
+
+  if (currentAttempt) {
+    currentAttempt.success = true; // Still sleeping
+    attempts.push(currentAttempt);
+  }
+
+  const container = d3.select('#sleep-attempts-list');
+
+  // Add unique IDs to attempts for D3 data binding
+  const attemptsWithIds = attempts.map((attempt, index) => ({
+    ...attempt,
+    attemptId: `${attempt.start.getTime()}-${index}`,
+  }));
+
+  // D3 data binding for sleep attempts
+  const attemptElements = container.selectAll('.attempt').data(attemptsWithIds, (d) => d.attemptId);
+
+  // Remove exiting attempts
+  attemptElements.exit().transition().duration(300).style('opacity', 0).style('height', '0px').style('padding', '0px').remove();
+
+  // Add new attempts
+  const enteringAttempts = attemptElements
+    .enter()
+    .append('div')
+    .attr('class', (d) => `attempt ${d.success ? 'success' : 'fail'}`)
+    .style('opacity', 0)
+    .style('transform', 'scaleY(0.01)');
+
+  // Update all attempts
+  const allAttempts = enteringAttempts.merge(attemptElements);
+
+  allAttempts
+    .attr('class', (d) => `attempt ${d.success ? 'success' : 'fail'}`)
+    .transition()
+    .duration(300)
+    .style('opacity', 1)
+    .style('transform', '');
+
+  allAttempts.html((d) => {
+    const timeStr = d.start.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    let durationStr = '';
+    if (d.end) {
+      const mins = Math.round((d.end - d.start) / 1000 / 60);
+      durationStr = `${mins}m`;
+    } else {
+      durationStr = 'ongoing';
+    }
+
+    return `
+                        <span>${timeStr} - ${d.type}</span>
+                        <span>${durationStr} ${d.success ? '✓' : '✗'}</span>
+                    `;
+  });
+}
+
+function updateRecentEvents(entries) {
+  // Store entries globally for filtering
+  allDayEntries = entries;
+
+  // Clear text and type filters but keep hide deleted checked by default
+  d3.select('#event-filter').property('value', '');
+  d3.select('#event-type-filter').property('value', '');
+
+  // Apply current filter settings
+  applyEventFilters();
+}
+
+function showEventDetails(entry, event) {
+  // Create or select tooltip div
+  let tooltip = d3.select('body').select('.event-tooltip');
+  if (tooltip.empty()) {
+    tooltip = d3
+      .select('body')
+      .append('div')
+      .attr('class', 'event-tooltip')
+      .style('position', 'absolute')
+      .style('background', 'var(--card)')
+      .style('padding', '12px')
+      .style('border-radius', '8px')
+      .style('box-shadow', '0 4px 12px rgba(0,0,0,0.2)')
+      .style('border', '1px solid var(--muted)')
+      .style('font-size', '14px')
+      .style('max-width', '250px')
+      .style('z-index', '1001')
+      .style('opacity', 0)
+      .style('pointer-events', 'none');
+  }
+
+  const time = new Date(entry.ts);
+  const fullTimeStr = time.toLocaleString();
+  const elapsed = formatElapsedTime(time.getTime());
+
+  tooltip.html(`
+                    <strong>Entry #${entry.id}</strong><br>
+                    <strong>Type:</strong> ${entry.type}<br>
+                    <strong>Value:</strong> ${entry.value}<br>
+                    <strong>Time:</strong> ${fullTimeStr}<br>
+                    <strong>Elapsed:</strong> ${elapsed}<br>
+                    <strong>Deleted:</strong> ${entry.deleted ? 'Yes' : 'No'}
+                `);
+
+  // Position tooltip near mouse - use the passed event object
+  const [mouseX, mouseY] = d3.pointer(event, d3.select('body').node());
+  tooltip
+    .style('left', mouseX + 10 + 'px')
+    .style('top', mouseY - 10 + 'px')
+    .transition()
+    .duration(200)
+    .style('opacity', 1);
+
+  // Hide tooltip after 3 seconds
+  setTimeout(() => {
+    tooltip.transition().duration(300).style('opacity', 0);
+  }, 3000);
+}
+
+function drawTimeline(entries) {
+  const container = document.getElementById('timeline-chart');
+  container.innerHTML = '';
+
+  const width = container.clientWidth || 600;
+  const height = 200;
+  const margin = { top: 20, right: 20, bottom: 30, left: 40 };
+
+  const svg = d3.select('#timeline-chart').append('svg').attr('width', width).attr('height', height);
+
+  // Get day boundaries
+  const { dayStart, dayEnd } = getDayBoundsAsDate(currentReportDate);
+
+  // Filter to entries we care about for display
+  const dayStart12HoursBefore = new Date(dayStart.getTime() - 12 * 60 * 60 * 1000);
+  const dayEnd12HoursAfter = new Date(dayEnd.getTime() + 12 * 60 * 60 * 1000);
+
+  const relevantEntries = entries.filter((e) => {
+    const ts = new Date(e.ts);
+    return ts >= dayStart12HoursBefore && ts <= dayEnd12HoursAfter;
+  });
+
+  if (relevantEntries.length === 0) {
+    svg
+      .append('text')
+      .attr('x', width / 2)
+      .attr('y', height / 2)
+      .attr('text-anchor', 'middle')
+      .style('fill', getComputedStyle(document.documentElement).getPropertyValue('--text-muted'))
+      .text('No data for this day');
+    return;
+  }
+
+  // Prepare data for timeline - convert timestamps to hours relative to day start
+  const sleepEvents = [];
+  const eventData = []; // All non-sleep events
+
+  relevantEntries.forEach((e) => {
+    const date = new Date(e.ts);
+    // Calculate hours relative to the start of the viewing day
+    const hours = (date - dayStart) / (1000 * 60 * 60);
+
+    if (e.type === 'sleep') {
+      sleepEvents.push({
+        time: hours,
+        value: e.value,
+        ts: date,
+      });
+    } else if (hours >= 0 && hours < 24) {
+      // Look up emoji from the map
+      let emoji = '•';
+      if (emojiMap[e.type]) {
+        emoji = emojiMap[e.type][e.value] || emojiMap[e.type][''] || '•';
+      }
+      eventData.push({
+        time: hours,
+        emoji: emoji,
+        type: e.type,
+        value: e.value,
+      });
+    }
+  });
+
+  // Create scales
+  const x = d3
+    .scaleLinear()
+    .domain([0, 24])
+    .range([margin.left, width - margin.right]);
+
+  const y = d3
+    .scaleLinear()
+    .domain([0, 3])
+    .range([height - margin.bottom, margin.top]);
+
+  // Draw gridlines for every hour
+  for (let hour = 0; hour <= 24; hour++) {
+    svg
+      .append('line')
+      .attr('x1', x(hour))
+      .attr('x2', x(hour))
+      .attr('y1', margin.top)
+      .attr('y2', height - margin.bottom)
+      .attr('stroke', '#e0e0e0')
+      .attr('stroke-width', 1)
+      .attr('opacity', 0.5);
+  }
+
+  // Draw axes with fewer ticks (every 3 hours)
+  svg
+    .append('g')
+    .attr('transform', `translate(0,${height - margin.bottom})`)
+    .call(
+      d3
+        .axisBottom(x)
+        .ticks(8)
+        .tickValues([0, 3, 6, 9, 12, 15, 18, 21, 24])
+        .tickFormat((d) => d + 'h')
+    );
+
+  // Build continuous sleep state line data
+  // States: 2.5 = awake, 1.5 = light sleep (<20 min), 0.5 = deep sleep (>20 min)
+  const lineData = [];
+
+  // Determine initial state based on previous day - add a mock event at time 0
+  const eventsBeforeDay = sleepEvents.filter((e) => e.time < 0);
+  if (eventsBeforeDay.length > 0) {
+    const lastEventBeforeDay = eventsBeforeDay[eventsBeforeDay.length - 1];
+    if (lastEventBeforeDay.value === 'sleeping' || lastEventBeforeDay.value === 'nap') {
+      // Add a mock sleep event at midnight to continue the sleep
+      sleepEvents.unshift({
+        time: 0,
+        value: lastEventBeforeDay.value,
+        ts: dayStart,
+      });
+    } else {
+      // Add a mock awake event at midnight
+      sleepEvents.unshift({
+        time: 0,
+        value: 'awake',
+        ts: dayStart,
+      });
+    }
+  } else {
+    // No previous events, assume awake at start
+    sleepEvents.unshift({
+      time: 0,
+      value: 'awake',
+      ts: dayStart,
+    });
+  }
+
+  let currentState = 2.5; // awake
+  let sleepStartTime = null;
+
+  sleepEvents.forEach((event, i) => {
+    const hour = Math.max(0, Math.min(24, event.time));
+
+    if (event.value === 'sleeping' || event.value === 'nap') {
+      // Starting to sleep
+      sleepStartTime = event.time;
+      sleepStartEvent = event;
+      currentState = 1.5; // light sleep
+      if (hour >= 0 && hour <= 24) {
+        lineData.push({ time: hour, state: currentState });
+      }
+    } else if (event.value === 'awake') {
+      // Waking up - check duration
+      if (sleepStartTime !== null) {
+        const durationMinutes = (event.time - sleepStartTime) * 60;
+
+        if (durationMinutes > 20) {
+          // It was a deep sleep - add transition to deep sleep
+          const deepSleepTime = Math.max(0, sleepStartTime + 20 / 60); // 20 minutes after sleep start
+          if (deepSleepTime >= 0 && deepSleepTime <= 24) {
+            lineData.push({
+              time: deepSleepTime,
+              state: 0.5,
+            });
+          }
+        }
+      }
+
+      currentState = 2.5; // awake
+      if (hour >= 0 && hour <= 24) {
+        lineData.push({ time: hour, state: currentState });
+      }
+      sleepStartTime = null;
+    }
+  });
+
+  // Determine end time and handle ongoing sleep
+  const now = new Date();
+  const isToday = currentReportDate.toDateString() === now.toDateString();
+  const endTime = isToday ? now.getHours() + now.getMinutes() / 60 : 24;
+
+  if (sleepStartTime !== null) {
+    // Still sleeping at end of period
+    const durationMinutes = (endTime - sleepStartTime) * 60;
+
+    if (durationMinutes > 20) {
+      const deepSleepTime = sleepStartTime + 20 / 60;
+      if (deepSleepTime <= endTime && deepSleepTime >= 0) {
+        lineData.push({ time: deepSleepTime, state: 0.5 });
+      }
+    }
+
+    const finalState = durationMinutes > 20 ? 0.5 : 1.5;
+    lineData.push({ time: endTime, state: finalState });
+  } else {
+    // End with current awake state
+    lineData.push({ time: endTime, state: currentState });
+  }
+
+  // Sort by time
+  lineData.sort((a, b) => a.time - b.time);
+
+  // Create line generator
+  const line = d3
+    .line()
+    .x((d) => x(d.time))
+    .y((d) => y(d.state))
+    .curve(d3.curveStepAfter);
+
+  // Create area generator for shading above the line (but only up to awake level)
+  const area = d3
+    .area()
+    .x((d) => x(d.time))
+    .y0((d) => y(Math.min(d.state, 2.5)))
+    .y1((d) => y(2.5))
+    .curve(d3.curveStepAfter);
+
+  // Draw shaded area under the sleep line
+  svg.append('path').datum(lineData).attr('fill', '#2196f3').attr('fill-opacity', 0.1).attr('d', area);
+
+  // Draw the sleep state line
+  svg.append('path').datum(lineData).attr('fill', 'none').attr('stroke', '#2196f3').attr('stroke-width', 3).attr('d', line);
+
+  // Draw events as emoji text with hash-based vertical spacing to avoid overlap
+  // Simple hash function to spread emojis across vertical levels
+  function hashStr(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash << 5) - hash + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return Math.abs(hash);
+  }
+
+  const emojiYLevels = 8; // Number of vertical levels for emoji distribution
+  const emojiYRange = height - margin.top - margin.bottom - 30; // Leave space for labels
+
+  eventData.forEach((d) => {
+    // Hash based on time and type to distribute vertically
+    const hash = hashStr(`${d.value}`);
+    const levelOffset = (hash % emojiYLevels) / emojiYLevels;
+    const yPos = margin.top + 10 + levelOffset * emojiYRange;
+
+    svg
+      .append('text')
+      .attr('x', x(d.time))
+      .attr('y', yPos)
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'middle')
+      .style('font-size', '16px')
+      .style('cursor', 'pointer')
+      .text(d.emoji)
+      .append('title')
+      .text(`${d.type}: ${d.value}`);
+  });
+
+  // Add Y-axis labels
+  const axisColor = getComputedStyle(document.documentElement).getPropertyValue('--text-muted');
+
+  svg
+    .append('text')
+    .attr('x', margin.left - 5)
+    .attr('y', y(2.5))
+    .attr('text-anchor', 'end')
+    .attr('alignment-baseline', 'middle')
+    .style('font-size', '11px')
+    .style('fill', axisColor)
+    .text('Awake');
+
+  svg
+    .append('text')
+    .attr('x', margin.left - 5)
+    .attr('y', y(1.5))
+    .attr('text-anchor', 'end')
+    .attr('alignment-baseline', 'middle')
+    .style('font-size', '11px')
+    .style('fill', axisColor)
+    .text('Light');
+
+  svg
+    .append('text')
+    .attr('x', margin.left - 5)
+    .attr('y', y(0.5))
+    .attr('text-anchor', 'end')
+    .attr('alignment-baseline', 'middle')
+    .style('font-size', '11px')
+    .style('fill', axisColor)
+    .text('Deep');
+}
+
+
+
+
+
+// Initialize date selector to today
+const today = new Date();
+const year = today.getFullYear();
+const month = String(today.getMonth() + 1).padStart(2, '0');
+const day = String(today.getDate()).padStart(2, '0');
+document.getElementById('report-date').value = `${year}-${month}-${day}`;
+
+// Build hourly grid
+const hourlyGrid = document.getElementById('hourly-grid');
+
+// Add empty cell for top-left corner
+const corner = document.createElement('div');
+hourlyGrid.appendChild(corner);
+
+// Add hour labels across the top
+for (let hour = 0; hour < 24; hour++) {
+  const label = document.createElement('div');
+  label.className = 'hour-label';
+  label.textContent = hour;
+  hourlyGrid.appendChild(label);
+}
+
+// Add rows with labels
+const rows = [
+  { label: 'Feed', type: 'feed' },
+  { label: 'Sleep', type: 'sleep' },
+  { label: 'Wet', type: 'wet' },
+  { label: 'Dirty', type: 'dirty' },
+];
+
+rows.forEach((row) => {
+  // Add row label
+  const rowLabel = document.createElement('div');
+  rowLabel.className = 'row-label';
+  rowLabel.textContent = row.label;
+  hourlyGrid.appendChild(rowLabel);
+
+  // Add indicators for each hour
+  for (let hour = 0; hour < 24; hour++) {
+    const indicator = document.createElement('div');
+    indicator.className = `hour-indicator ${row.type}`;
+    indicator.id = `hour-${hour}-${row.type}`;
+    indicator.title = `${row.label} at ${hour}:00`;
+    hourlyGrid.appendChild(indicator);
+  }
+});
+
+initDB().then(() => {
+  renderButtons();
+  updateDailyReport();
+  updateButtonStates();
+
+  // Setup event filters
+  d3.select('#event-filter').on('input', applyEventFilters);
+  d3.select('#event-type-filter').on('change', applyEventFilters);
+  d3.select('#hide-deleted-filter').on('change', applyEventFilters);
+});
+
+let allDayEntries = []; // Store all entries for filtering
+
+function applyEventFilters() {
+  const textFilter = d3.select('#event-filter').property('value').toLowerCase();
+  const typeFilter = d3.select('#event-type-filter').property('value');
+  const hideDeleted = d3.select('#hide-deleted-filter').property('checked');
+
+  const filteredEntries = allDayEntries.filter((e) => {
+    const matchesDeleted = !hideDeleted || !e.deleted;
+    const matchesType = !typeFilter || e.type === typeFilter;
+    const matchesText = !textFilter || e.type.toLowerCase().includes(textFilter) || e.value.toLowerCase().includes(textFilter);
+    return matchesDeleted && matchesType && matchesText;
+  });
+
+  updateRecentEventsDisplay(filteredEntries);
+}
+
+function updateRecentEventsDisplay(entries) {
+  const container = d3.select('#recent-events-list');
+  if (!container.node()) return;
+
+  // Show all events for the selected day in reverse chronological order
+  const allEvents = [...entries].reverse();
+
+  // D3 data binding using IndexedDB primary key
+  const eventEntries = container.selectAll('.event-entry').data(allEvents, (d) => d.id); // Key by IndexedDB primary key
+
+  // Remove exiting events
+  eventEntries
+    .exit()
+    .style('overflow', 'hidden')
+    .transition()
+    .duration(300)
+    .style('opacity', 0)
+    .style('max-height', '0px')
+    .style('margin-top', '0px')
+    .style('margin-bottom', '0px')
+    .style('padding-top', '0px')
+    .style('padding-bottom', '0px')
+    .remove();
+
+  // Add new events
+  const enteringEvents = eventEntries
+    .enter()
+    .append('div')
+    .attr('class', (d) => `event-entry${d.deleted ? ' deleted' : ''}`)
+    .style('opacity', 0)
+    .style('max-height', '0px')
+    .style('overflow', 'hidden')
+    .style('margin-top', '0px')
+    .style('margin-bottom', '0px')
+    .style('padding-top', '0px')
+    .style('padding-bottom', '0px');
+
+  // Update all events (both new and existing)
+  const allEventEntries = enteringEvents.merge(eventEntries);
+
+  allEventEntries
+    .attr('class', (d) => `event-entry${d.deleted ? ' deleted' : ''}`)
+    .transition()
+    .duration(300)
+    .style('opacity', 1)
+    .style('max-height', '100px')
+    .style('overflow', '')
+    .style('margin-top', '')
+    .style('margin-bottom', '')
+    .style('padding-top', '')
+    .style('padding-bottom', '');
+
+  allEventEntries.html((d) => {
+    const timeStr = new Date(d.ts).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const deletedLabel = d.deleted ? ' <small style="opacity: 0.6;">[deleted]</small>' : '';
+    const actionBtn = d.deleted
+      ? `<button class="action-btn undelete-btn" data-id="${d.id}">↶</button>`
+      : `<button class="action-btn delete-btn" data-id="${d.id}">×</button>`;
+
+    return `
+                        <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                            <div>
+                                <span class="event-type">${d.type}</span><span class="event-value">: ${d.value}</span>${deletedLabel}
+                            </div>
+                            <div style="display: flex; align-items: center;">
+                                <span class="event-time">${timeStr}</span>${actionBtn}
+                            </div>
+                        </div>
+                    `;
+  });
+
+  // Helper function for entry actions
+  const handleEntryAction = async (entry, action) => {
+    const result = action === 'delete' ? await deleteEntry(entry.id) : await undeleteEntry(entry.id);
+    if (result) {
+      const actionText = action === 'delete' ? 'Deleted' : 'Restored';
+      updateTimestamp(`${actionText}: ${result.type} - ${result.value}`);
+      updateDailyReport();
+      updateButtonStates();
+    }
+  };
+
+  // Add event interactions
+  allEventEntries
+    .style('cursor', 'pointer')
+    .on('click', function (event, d) {
+      if (event.target.classList.contains('delete-btn')) {
+        event.stopPropagation();
+        handleEntryAction(d, 'delete');
+      } else if (event.target.classList.contains('undelete-btn')) {
+        event.stopPropagation();
+        handleEntryAction(d, 'undelete');
+      } else {
+        showEventDetails(d, event);
+      }
+    })
+    .on('dblclick', (event, d) => !d.deleted && handleEntryAction(d, 'delete'));
+}
+
+// this function generates several days worth of test data. it is lightly random.
+async function generateTestData() {
+  const days = 7; // Generate a week of data
+  const now = new Date();
+
+  for (let day = days - 1; day >= 0; day--) {
+    const baseDate = new Date(now);
+    baseDate.setDate(baseDate.getDate() - day);
+    baseDate.setHours(0, 0, 0, 0);
+
+    // Generate sleep patterns (roughly 3-4 sleep cycles per day)
+    const sleepCycles = 3 + Math.floor(Math.random() * 2);
+
+    for (let cycle = 0; cycle < sleepCycles; cycle++) {
+      // Sleep start time (spread throughout 24 hours)
+      const sleepHour = Math.floor((24 / sleepCycles) * cycle + Math.random() * 2);
+      const sleepMinute = Math.floor(Math.random() * 60);
+
+      const sleepStart = new Date(baseDate);
+      sleepStart.setHours(sleepHour, sleepMinute);
+
+      // Sleep type: longer sleep at night, naps during day
+      const sleepType = sleepHour >= 20 || sleepHour < 6 ? 'sleeping' : 'nap';
+      await addEntry('sleep', sleepType, sleepStart.toISOString());
+
+      // Sleep duration: 30min to 3 hours for naps, 2-5 hours for night sleep
+      let durationMinutes;
+      if (sleepType === 'nap') {
+        durationMinutes = 30 + Math.random() * 150;
+      } else {
+        durationMinutes = 120 + Math.random() * 180;
+      }
+
+      const awakeTime = new Date(sleepStart);
+      awakeTime.setMinutes(awakeTime.getMinutes() + durationMinutes);
+
+      // Sometimes add soothe methods before sleep
+      if (Math.random() > 0.5) {
+        const sootheBefore = new Date(sleepStart);
+        sootheBefore.setMinutes(sootheBefore.getMinutes() - 5);
+        const sootheMethod = ['rocking', 'pram', 'wearing', 'feed-to-sleep'][Math.floor(Math.random() * 4)];
+        await addEntry('soothe', sootheMethod, sootheBefore.toISOString());
+      }
+
+      await addEntry('sleep', 'awake', awakeTime.toISOString());
+    }
+
+    // Generate feeding events (every 2-4 hours, ~6-8 feeds per day)
+    const feedCount = 6 + Math.floor(Math.random() * 3);
+
+    for (let feed = 0; feed < feedCount; feed++) {
+      const feedHour = Math.floor((24 / feedCount) * feed + Math.random() * 2);
+      const feedMinute = Math.floor(Math.random() * 60);
+
+      const feedTime = new Date(baseDate);
+      feedTime.setHours(feedHour, feedMinute);
+
+      await addEntry('feed', 'bf', feedTime.toISOString());
+
+      // Sometimes spew after feeding
+      if (Math.random() > 0.7) {
+        const spewTime = new Date(feedTime);
+        spewTime.setMinutes(spewTime.getMinutes() + 10 + Math.random() * 30);
+        await addEntry('feed', 'spew', spewTime.toISOString());
+      }
+
+      // Occasional grizzle
+      if (Math.random() > 0.8) {
+        const grizzleTime = new Date(feedTime);
+        grizzleTime.setMinutes(grizzleTime.getMinutes() - 5 - Math.random() * 10);
+        await addEntry('feed', 'grizzle', grizzleTime.toISOString());
+      }
+    }
+
+    // Generate Nappy changes (roughly 6-10 per day)
+    const NappyCount = 6 + Math.floor(Math.random() * 5);
+
+    for (let Nappy = 0; Nappy < NappyCount; Nappy++) {
+      const NappyHour = Math.floor((24 / NappyCount) * Nappy + Math.random() * 2);
+      const NappyMinute = Math.floor(Math.random() * 60);
+
+      const NappyTime = new Date(baseDate);
+      NappyTime.setHours(NappyHour, NappyMinute);
+
+      // Most Nappies are wet
+      await addEntry('nappy', 'wet', NappyTime.toISOString());
+
+      // About half are also dirty
+      if (Math.random() > 0.5) {
+        await addEntry('nappy', 'dirty', NappyTime.toISOString());
+      }
+    }
+
+    // Occasional use of 5 S's techniques
+    const fiveSCount = Math.floor(Math.random() * 4);
+    for (let i = 0; i < fiveSCount; i++) {
+      const fiveSHour = Math.floor(Math.random() * 24);
+      const fiveSMinute = Math.floor(Math.random() * 60);
+
+      const fiveSTime = new Date(baseDate);
+      fiveSTime.setHours(fiveSHour, fiveSMinute);
+
+      const technique = ['swaddle', 'side-lying', 'shush', 'swing', 'suck'][Math.floor(Math.random() * 5)];
+      await addEntry('5s', technique, fiveSTime.toISOString());
+    }
+
+    // Add occasional notes
+    if (Math.random() > 0.6) {
+      const noteHour = Math.floor(Math.random() * 24);
+      const noteMinute = Math.floor(Math.random() * 60);
+
+      const noteTime = new Date(baseDate);
+      noteTime.setHours(noteHour, noteMinute);
+
+      const notes = [
+        'Good day!',
+        'A bit fussy today',
+        'Slept well',
+        'Cluster feeding',
+        'Very alert and happy',
+        'Seems gassy',
+        'Long stretch of sleep!',
+        'Growth spurts?',
+      ];
+      await addEntry('note', notes[Math.floor(Math.random() * notes.length)], noteTime.toISOString());
+    }
+  }
+
+  console.log(`Generated ${days} days of test data`);
+  await updateDailyReport();
+}
