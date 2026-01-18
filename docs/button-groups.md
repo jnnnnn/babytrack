@@ -11,9 +11,7 @@ Button groups are the core UI abstraction for logging baby events. Each group co
 ```typescript
 interface ButtonGroup {
   category: string;           // Event type stored in DB (e.g., 'feed', 'sleep')
-  mode?: 'event' | 'toggle';  // Display mode (default: 'event')
-  onStates?: string[];        // For toggle mode: which values are "on"
-  countDaily?: string | string[];  // Values to count in daily stats
+  stateful?: boolean;         // If true, group tracks current state (default: false)
   buttons: Button[];
 }
 
@@ -21,42 +19,41 @@ interface Button {
   value: string;    // Value stored in DB
   label: string;    // Display text
   emoji?: string;   // Optional emoji
-  timer?: boolean;  // Show elapsed time since last occurrence
+  timer?: boolean;  // Show elapsed time since last occurrence (event mode only)
 }
 ```
 
 ### Display Modes
 
-#### `event` mode (default)
+#### Event mode (`stateful: false`, default)
 - Simple event logging
-- No highlighting
-- Buttons with `timer: true` show elapsed time since that button was last pressed
+- Buttons with `timer: true` show elapsed time since last pressed
+- **All button presses are automatically counted in daily stats**
 
-#### `toggle` mode
+#### Stateful mode (`stateful: true`)
 - Group represents a state machine (e.g., sleeping/awake)
-- Last pressed button determines current state
-- If current state is in `onStates[]`: that button is highlighted
-- If current state is NOT in `onStates[]`: first non-on button is highlighted
-- Highlighted button shows elapsed time since state entered
+- Last pressed button is the current state
+- Current state button is highlighted and shows elapsed time
+- Stateful groups do NOT auto-count (they track state, not events)
 
 ### Timer Display
 
-For buttons with `timer: true`:
+For event mode buttons with `timer: true`:
 - Shows elapsed time since that button value was last logged
-- Format: "2h 15m" or "45m" or "Just now"
+- Format: "2h 15m ago" or "45m ago"
 - Timer updates every minute
 
-For toggle mode:
+For stateful mode:
 - Active state button shows elapsed time (regardless of `timer` property)
 - Time represents "how long in this state"
 
 ## Example Configurations
 
 ```javascript
-// Feed group: simple events with timer on 'bf' button
+// Feed group: event mode with timer on 'bf' button
+// All buttons auto-counted in daily stats
 {
   category: 'feed',
-  countDaily: 'bf',
   buttons: [
     { value: 'bf', label: 'Feed', emoji: '🤱', timer: true },
     { value: 'play', label: 'Play', emoji: '🎾' },
@@ -64,11 +61,10 @@ For toggle mode:
   ],
 }
 
-// Sleep group: toggle between sleeping/awake states
+// Sleep group: stateful - each button is a state
 {
   category: 'sleep',
-  mode: 'toggle',
-  onStates: ['sleeping', 'nap'],
+  stateful: true,
   buttons: [
     { value: 'sleeping', label: 'Sleeping' },
     { value: 'nap', label: 'Nap' },
@@ -77,10 +73,9 @@ For toggle mode:
   ],
 }
 
-// Nappy group: simple events with daily counts
+// Nappy group: event mode, auto-counted
 {
   category: 'nappy',
-  countDaily: ['wet', 'dirty'],
   buttons: [
     { value: 'wet', label: 'Wet', emoji: '💧' },
     { value: 'dirty', label: 'Dirty', emoji: '💩' },
@@ -90,37 +85,39 @@ For toggle mode:
 
 ## State Calculation
 
-### For `event` mode groups:
+### For event mode groups:
 ```
-For each button with timer: true:
-  lastEntry = most recent entry with this button's value
-  if lastEntry exists:
-    show elapsed time on button
+For each button:
+  if button has timer: true:
+    lastEntry = most recent entry with this button's value
+    if lastEntry exists:
+      show elapsed time on button
+  count all presses for daily stats
 ```
 
-### For `toggle` mode groups:
+### For stateful groups:
 ```
 lastEntry = most recent entry in this category
-currentValue = lastEntry?.value
-isOn = onStates.includes(currentValue)
+currentState = lastEntry?.value
 
 For each button:
-  isOnButton = onStates.includes(button.value)
-  highlighted = (isOn && isOnButton) || (!isOn && button === firstOffButton)
-  showTimer = highlighted
+  highlighted = (button.value === currentState)
+  if highlighted:
+    show elapsed time since entering this state
 ```
 
 ## Migration
 
 Old config format:
 ```javascript
-{ showTiming: 'bf', stateful: ['sleeping'] }
+{ mode: 'toggle', onStates: ['sleeping'], countDaily: 'bf' }
 ```
 
 New config format:
 ```javascript
-// showTiming -> timer: true on button
-// stateful -> mode: 'toggle', onStates: [...]
+// mode: 'toggle' -> stateful: true
+// countDaily removed - event mode buttons auto-count
+// onStates removed - all buttons are states
 ```
 
 Migration runs on load; old format still accepted but converted.

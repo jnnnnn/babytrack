@@ -55,7 +55,10 @@ gofmt -w server/
 echo "=== Lint ==="
 # TODO: golangci-lint run ./server/...
 
-echo "=== Test ==="
+echo "=== JS Tests ==="
+node babytrack.js
+
+echo "=== Go Tests ==="
 (cd server && go test -cover ./...)
 
 echo "=== E2E ==="

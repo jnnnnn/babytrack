@@ -58,14 +58,9 @@ test.describe('Client Workflow', () => {
     await expect(feedButton).toBeVisible();
     await feedButton.click();
     await expect(feedButton).toHaveClass(/fading/);
-    await page.waitForTimeout(300);
 
-    // Verify event appears in local log
-    const logTab = page.locator('button.tab-btn[data-tab="log"]');
-    if (await logTab.isVisible()) {
-      await logTab.click();
-    }
-    await expect(page.locator('.event-entry', { hasText: 'feed' })).toBeVisible();
+    // Wait for the report to update and event to appear
+    await expect(page.locator('.event-entry', { hasText: 'feed' })).toBeVisible({ timeout: 10000 });
   });
 
   test('bidirectional sync: client -> server -> other session', async ({ browser }) => {

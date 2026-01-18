@@ -1,6 +1,399 @@
 // BabyTrack Application JavaScript
 // See docs/button-groups.md for button group specification
 
+// ==================== Pure Functions (testable in Node.js) ====================
+
+/**
+ * Find the last entry in a list (pure function)
+ * @param {Array} entries - Array of entries sorted by timestamp
+ * @returns {Object|null} - The last entry or null
+ */
+function getLastEntry(entries) {
+  return entries.length > 0 ? entries[entries.length - 1] : null;
+}
+
+/**
+ * Find the last entry with a specific value (pure function)
+ * @param {Array} entries - Array of entries sorted by timestamp
+ * @param {string} value - Value to find
+ * @returns {Object|null} - The last matching entry or null
+ */
+function findLastEntryByValue(entries, value) {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].value === value) return entries[i];
+  }
+  return null;
+}
+
+/**
+ * Format elapsed time from milliseconds (pure function)
+ * @param {number} elapsedMs - Elapsed time in milliseconds
+ * @returns {string} - Formatted string like "2h 15m ago"
+ */
+function formatElapsedTimeFromMs(elapsedMs) {
+  const elapsed = Math.floor(elapsedMs / 1000 / 60);
+  const hours = Math.floor(elapsed / 60);
+  const mins = elapsed % 60;
+  return hours > 0 ? `${hours}h ${mins}m ago` : `${mins}m ago`;
+}
+
+/**
+ * Compute state for a single button in event mode (pure function)
+ * @param {Object} btn - Button config
+ * @param {Array} categoryEntries - Entries for this category
+ * @param {number} now - Current timestamp in ms
+ * @returns {{highlight: boolean, timeStr: string|null}}
+ */
+function computeEventButtonState(btn, categoryEntries, now) {
+  const lastEntry = getLastEntry(categoryEntries);
+  let highlight = false;
+  let timeStr = null;
+
+  if (btn.timer) {
+    const lastOfThisValue = findLastEntryByValue(categoryEntries, btn.value);
+    if (lastOfThisValue) {
+      timeStr = formatElapsedTimeFromMs(now - new Date(lastOfThisValue.ts).getTime());
+      highlight = lastEntry && lastEntry.value === btn.value;
+    }
+  }
+
+  return { highlight, timeStr };
+}
+
+/**
+ * Compute state for a single button in stateful mode (pure function)
+ * @param {Object} btn - Button config
+ * @param {Object|null} lastEntry - Most recent entry in category
+ * @param {number} now - Current timestamp in ms
+ * @returns {{highlight: boolean, timeStr: string|null}}
+ */
+function computeStatefulButtonState(btn, lastEntry, now) {
+  if (!lastEntry) {
+    return { highlight: false, timeStr: null };
+  }
+
+  const highlight = lastEntry.value === btn.value;
+  const timeStr = highlight ? formatElapsedTimeFromMs(now - new Date(lastEntry.ts).getTime()) : null;
+
+  return { highlight, timeStr };
+}
+
+/**
+ * Compute button states for a group based on entries (pure function)
+ * Implements the spec from docs/button-groups.md
+ *
+ * @param {Object} group - Button group config
+ * @param {Array} categoryEntries - All non-deleted entries for this category
+ * @param {number} now - Current timestamp in ms
+ * @returns {Array<{button: Object, highlight: boolean, timeStr: string|null}>}
+ */
+function computeButtonStates(group, categoryEntries, now = Date.now()) {
+  const isStateful = group.stateful === true;
+  const lastEntry = getLastEntry(categoryEntries);
+
+  return group.buttons.map((btn) => {
+    const state = isStateful
+      ? computeStatefulButtonState(btn, lastEntry, now)
+      : computeEventButtonState(btn, categoryEntries, now);
+
+    return { button: btn, ...state };
+  });
+}
+
+/**
+ * Migrate old config formats to new spec (pure function)
+ * - mode: 'toggle' -> stateful: true
+ * - countDaily removed (auto-count for non-stateful)
+ * - onStates removed (all buttons are states)
+ * @param {Array} groups - Button groups in old or new format
+ * @returns {Array} - Migrated button groups
+ */
+function migrateButtonGroups(groups) {
+  return groups.map((group) => {
+    const migrated = { ...group };
+
+    // Migrate button.type to group.category
+    if (migrated.category === undefined && migrated.buttons?.length > 0) {
+      migrated.category = migrated.buttons[0].type || 'custom';
+      migrated.buttons = migrated.buttons.map(({ type, ...rest }) => rest);
+    }
+
+    // Migrate showTiming to button.timer
+    if (migrated.showTiming !== undefined) {
+      const timingValues = Array.isArray(migrated.showTiming) ? migrated.showTiming : [migrated.showTiming];
+      migrated.buttons = migrated.buttons.map(btn => ({
+        ...btn,
+        timer: timingValues.includes(btn.value) ? true : btn.timer
+      }));
+      delete migrated.showTiming;
+    }
+
+    // Migrate mode: 'toggle' to stateful: true
+    if (migrated.mode === 'toggle') {
+      migrated.stateful = true;
+      delete migrated.mode;
+      delete migrated.onStates;
+    } else if (migrated.mode === 'event') {
+      delete migrated.mode;
+    }
+
+    // Migrate old 'stateful' array to stateful: true
+    if (Array.isArray(migrated.stateful)) {
+      migrated.stateful = true;
+    }
+
+    // Remove countDaily (now auto-counted)
+    delete migrated.countDaily;
+
+    return migrated;
+  });
+}
+
+// ==================== Tests (run with Node.js) ====================
+
+if (typeof module !== 'undefined' && typeof module.exports !== 'undefined') {
+  function runTests() {
+    let passed = 0;
+    let failed = 0;
+
+    function assert(condition, message) {
+      if (!condition) {
+        console.error('FAIL:', message);
+        failed++;
+        return false;
+      }
+      passed++;
+      return true;
+    }
+
+    function assertEqual(actual, expected, message) {
+      const actualStr = JSON.stringify(actual);
+      const expectedStr = JSON.stringify(expected);
+      if (actualStr !== expectedStr) {
+        console.error(`FAIL: ${message}\n  Expected: ${expectedStr}\n  Actual: ${actualStr}`);
+        failed++;
+        return false;
+      }
+      passed++;
+      return true;
+    }
+
+    console.log('Running babytrack.js pure function tests...\n');
+
+    // Test: getLastEntry
+    (function testGetLastEntry() {
+      console.log('Testing getLastEntry...');
+      assertEqual(getLastEntry([]), null, 'empty array returns null');
+      assertEqual(getLastEntry([{id: 1}]), {id: 1}, 'single element returned');
+      assertEqual(getLastEntry([{id: 1}, {id: 2}, {id: 3}]), {id: 3}, 'last element returned');
+    })();
+
+    // Test: findLastEntryByValue
+    (function testFindLastEntryByValue() {
+      console.log('Testing findLastEntryByValue...');
+      const entries = [
+        {value: 'a', ts: '2024-01-01T01:00:00Z'},
+        {value: 'b', ts: '2024-01-01T02:00:00Z'},
+        {value: 'a', ts: '2024-01-01T03:00:00Z'},
+        {value: 'c', ts: '2024-01-01T04:00:00Z'},
+      ];
+      assertEqual(findLastEntryByValue([], 'a'), null, 'empty array returns null');
+      assertEqual(findLastEntryByValue(entries, 'x'), null, 'missing value returns null');
+      assertEqual(findLastEntryByValue(entries, 'a'), entries[2], 'finds last matching entry');
+      assertEqual(findLastEntryByValue(entries, 'c'), entries[3], 'finds single matching entry');
+    })();
+
+    // Test: formatElapsedTimeFromMs
+    (function testFormatElapsedTimeFromMs() {
+      console.log('Testing formatElapsedTimeFromMs...');
+      assertEqual(formatElapsedTimeFromMs(0), '0m ago', '0 ms shows 0m ago');
+      assertEqual(formatElapsedTimeFromMs(30 * 1000), '0m ago', '30s shows 0m ago');
+      assertEqual(formatElapsedTimeFromMs(5 * 60 * 1000), '5m ago', '5 min');
+      assertEqual(formatElapsedTimeFromMs(59 * 60 * 1000), '59m ago', '59 min');
+      assertEqual(formatElapsedTimeFromMs(60 * 60 * 1000), '1h 0m ago', '60 min = 1h 0m');
+      assertEqual(formatElapsedTimeFromMs(90 * 60 * 1000), '1h 30m ago', '90 min = 1h 30m');
+      assertEqual(formatElapsedTimeFromMs((3 * 60 + 15) * 60 * 1000), '3h 15m ago', '3h 15m');
+    })();
+
+    // Test: computeEventButtonState
+    (function testComputeEventButtonState() {
+      console.log('Testing computeEventButtonState...');
+      const now = new Date('2024-01-01T12:00:00Z').getTime();
+      const entries = [
+        {value: 'bf', ts: '2024-01-01T10:00:00Z'},
+        {value: 'play', ts: '2024-01-01T11:00:00Z'},
+      ];
+
+      const btnNoTimer = {value: 'bf', label: 'Feed'};
+      assertEqual(
+        computeEventButtonState(btnNoTimer, entries, now),
+        {highlight: false, timeStr: null},
+        'button without timer has no highlight or time'
+      );
+
+      const btnWithTimer = {value: 'bf', label: 'Feed', timer: true};
+      assertEqual(
+        computeEventButtonState(btnWithTimer, entries, now),
+        {highlight: false, timeStr: '2h 0m ago'},
+        'timer button shows time, not highlighted if not last'
+      );
+
+      const btnPlayTimer = {value: 'play', label: 'Play', timer: true};
+      assertEqual(
+        computeEventButtonState(btnPlayTimer, entries, now),
+        {highlight: true, timeStr: '1h 0m ago'},
+        'timer button highlighted if last entry'
+      );
+
+      const btnNoEntry = {value: 'spew', label: 'Spew', timer: true};
+      assertEqual(
+        computeEventButtonState(btnNoEntry, entries, now),
+        {highlight: false, timeStr: null},
+        'timer button with no entries'
+      );
+
+      assertEqual(
+        computeEventButtonState(btnWithTimer, [], now),
+        {highlight: false, timeStr: null},
+        'empty entries array'
+      );
+    })();
+
+    // Test: computeStatefulButtonState
+    (function testComputeStatefulButtonState() {
+      console.log('Testing computeStatefulButtonState...');
+      const now = new Date('2024-01-01T12:00:00Z').getTime();
+
+      assertEqual(
+        computeStatefulButtonState({value: 'sleeping', label: 'Sleeping'}, null, now),
+        {highlight: false, timeStr: null},
+        'null lastEntry - no highlight'
+      );
+
+      const lastEntry = {value: 'sleeping', ts: '2024-01-01T10:30:00Z'};
+      assertEqual(
+        computeStatefulButtonState({value: 'sleeping', label: 'Sleeping'}, lastEntry, now),
+        {highlight: true, timeStr: '1h 30m ago'},
+        'matching entry - highlighted with time'
+      );
+
+      assertEqual(
+        computeStatefulButtonState({value: 'awake', label: 'Awake'}, lastEntry, now),
+        {highlight: false, timeStr: null},
+        'non-matching entry - not highlighted'
+      );
+    })();
+
+    // Test: computeButtonStates
+    (function testComputeButtonStates() {
+      console.log('Testing computeButtonStates...');
+      const now = new Date('2024-01-01T12:00:00Z').getTime();
+
+      const statefulGroup = {
+        category: 'sleep',
+        stateful: true,
+        buttons: [
+          {value: 'sleeping', label: 'Sleeping'},
+          {value: 'awake', label: 'Awake'},
+        ],
+      };
+      const sleepEntries = [{value: 'sleeping', ts: '2024-01-01T11:00:00Z'}];
+      const statefulResult = computeButtonStates(statefulGroup, sleepEntries, now);
+      assertEqual(statefulResult.length, 2, 'stateful group returns 2 buttons');
+      assert(statefulResult[0].highlight === true, 'sleeping button highlighted');
+      assert(statefulResult[0].timeStr === '1h 0m ago', 'sleeping button shows time');
+      assert(statefulResult[1].highlight === false, 'awake button not highlighted');
+      assert(statefulResult[1].timeStr === null, 'awake button no time');
+
+      const eventGroup = {
+        category: 'feed',
+        buttons: [
+          {value: 'bf', label: 'Feed', timer: true},
+          {value: 'play', label: 'Play'},
+        ],
+      };
+      const feedEntries = [{value: 'bf', ts: '2024-01-01T11:30:00Z'}];
+      const eventResult = computeButtonStates(eventGroup, feedEntries, now);
+      assertEqual(eventResult.length, 2, 'event group returns 2 buttons');
+      assert(eventResult[0].highlight === true, 'bf button highlighted (last + timer)');
+      assert(eventResult[0].timeStr === '30m ago', 'bf button shows 30m');
+      assert(eventResult[1].highlight === false, 'play button not highlighted');
+      assert(eventResult[1].timeStr === null, 'play button no time (no timer flag)');
+
+      const emptyResult = computeButtonStates(statefulGroup, [], now);
+      assert(emptyResult[0].highlight === false, 'empty entries - no highlight');
+      assert(emptyResult[0].timeStr === null, 'empty entries - no time');
+    })();
+
+    // Test: migrateButtonGroups
+    (function testMigrateButtonGroups() {
+      console.log('Testing migrateButtonGroups...');
+
+      const oldToggle = [{
+        category: 'sleep',
+        mode: 'toggle',
+        onStates: ['sleeping'],
+        buttons: [{value: 'sleeping', label: 'Sleeping'}],
+      }];
+      const migratedToggle = migrateButtonGroups(oldToggle);
+      assertEqual(migratedToggle[0].stateful, true, 'mode toggle -> stateful true');
+      assertEqual(migratedToggle[0].mode, undefined, 'mode property removed');
+      assertEqual(migratedToggle[0].onStates, undefined, 'onStates property removed');
+
+      const oldEvent = [{
+        category: 'feed',
+        mode: 'event',
+        countDaily: 'bf',
+        buttons: [{value: 'bf', label: 'Feed'}],
+      }];
+      const migratedEvent = migrateButtonGroups(oldEvent);
+      assertEqual(migratedEvent[0].mode, undefined, 'mode event removed');
+      assertEqual(migratedEvent[0].countDaily, undefined, 'countDaily removed');
+
+      const oldShowTiming = [{
+        category: 'feed',
+        showTiming: 'bf',
+        buttons: [
+          {value: 'bf', label: 'Feed'},
+          {value: 'play', label: 'Play'},
+        ],
+      }];
+      const migratedShowTiming = migrateButtonGroups(oldShowTiming);
+      assertEqual(migratedShowTiming[0].buttons[0].timer, true, 'showTiming -> timer on matching button');
+      assertEqual(migratedShowTiming[0].buttons[1].timer, undefined, 'non-matching button no timer');
+      assertEqual(migratedShowTiming[0].showTiming, undefined, 'showTiming property removed');
+
+      const newFormat = [{
+        category: 'sleep',
+        stateful: true,
+        buttons: [{value: 'sleeping', label: 'Sleeping'}],
+      }];
+      const migratedNew = migrateButtonGroups(newFormat);
+      assertEqual(migratedNew[0].stateful, true, 'new format preserved');
+    })();
+
+    console.log(`\nTests complete: ${passed} passed, ${failed} failed`);
+    return failed === 0;
+  }
+
+  module.exports = {
+    getLastEntry,
+    findLastEntryByValue,
+    formatElapsedTimeFromMs,
+    computeEventButtonState,
+    computeStatefulButtonState,
+    computeButtonStates,
+    migrateButtonGroups,
+    runTests,
+  };
+
+  if (require.main === module) {
+    const success = runTests();
+    process.exit(success ? 0 : 1);
+  }
+} else {
+  // Browser environment - run full application
+
 // ==================== Error Forwarding ====================
 (function setupErrorForwarding() {
   const logQueue = [];
@@ -244,10 +637,7 @@ function nowIso() {
 }
 
 function formatElapsedTime(timestampMs) {
-  const elapsed = Math.floor((Date.now() - timestampMs) / 1000 / 60);
-  const hours = Math.floor(elapsed / 60);
-  const mins = elapsed % 60;
-  return hours > 0 ? `${hours}h ${mins}m ago` : `${mins}m ago`;
+  return formatElapsedTimeFromMs(Date.now() - timestampMs);
 }
 
 function getDayBounds(date) {
@@ -301,62 +691,6 @@ function updateButtonDisplay(btn, label, timeStr = null, highlight = false) {
 }
 
 /**
- * Compute button states for a group based on entries
- * Implements the spec from docs/button-groups.md
- *
- * @param {Object} group - Button group config
- * @param {Array} categoryEntries - All non-deleted entries for this category
- * @returns {Array<{button: Object, highlight: boolean, timeStr: string|null}>}
- */
-function computeButtonStates(group, categoryEntries) {
-  const lastEntry = categoryEntries.length > 0 ? categoryEntries[categoryEntries.length - 1] : null;
-  const mode = group.mode || 'event';
-
-  return group.buttons.map((btn) => {
-    let highlight = false;
-    let timeStr = null;
-
-    if (mode === 'toggle') {
-      // Toggle mode: group has on/off states
-      const onStates = group.onStates || [];
-      const isOnButton = onStates.includes(btn.value);
-      const currentIsOn = lastEntry && onStates.includes(lastEntry.value);
-
-      if (lastEntry) {
-        // Highlight the current state's button
-        if (currentIsOn) {
-          highlight = isOnButton && lastEntry.value === btn.value;
-        } else {
-          // Off state - highlight the button that was pressed (the current state)
-          highlight = lastEntry.value === btn.value;
-        }
-
-        // Show time on highlighted button
-        if (highlight) {
-          timeStr = formatElapsedTime(new Date(lastEntry.ts).getTime());
-        }
-      } else {
-        // No entries - no highlight
-        highlight = false;
-      }
-    } else {
-      // Event mode (default): simple event logging
-      // Buttons with timer: true show elapsed time since last occurrence
-      if (btn.timer) {
-        const lastOfThisValue = [...categoryEntries].reverse().find((e) => e.value === btn.value);
-        if (lastOfThisValue) {
-          timeStr = formatElapsedTime(new Date(lastOfThisValue.ts).getTime());
-          // Highlight if this was the last button pressed in the category
-          highlight = lastEntry && lastEntry.value === btn.value;
-        }
-      }
-    }
-
-    return { button: btn, highlight, timeStr };
-  });
-}
-
-/**
  * Update all button states from database
  * Called on load, after events, and periodically for timer updates
  */
@@ -375,10 +709,11 @@ async function updateButtonStates() {
   });
 
   const activeEntries = allEntries.filter((e) => !e.deleted);
+  const now = Date.now();
 
   buttonGroups.forEach((group) => {
     const categoryEntries = activeEntries.filter((e) => e.type === group.category);
-    const states = computeButtonStates(group, categoryEntries);
+    const states = computeButtonStates(group, categoryEntries, now);
 
     states.forEach(({ button: btn, highlight, timeStr }) => {
       const buttonEl = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
@@ -855,8 +1190,6 @@ async function downloadHourlyReport() {
 const defaultButtonGroups = [
   {
     category: 'feed',
-    mode: 'event',
-    countDaily: 'bf',
     buttons: [
       { value: 'bf', label: 'Feed', emoji: '🤱', timer: true },
       { value: 'play', label: 'Play', emoji: '🎾' },
@@ -865,8 +1198,7 @@ const defaultButtonGroups = [
   },
   {
     category: 'sleep',
-    mode: 'toggle',
-    onStates: ['sleeping', 'nap'],
+    stateful: true,
     buttons: [
       { value: 'sleeping', label: 'Sleeping', emoji: '' },
       { value: 'nap', label: 'Nap', emoji: '' },
@@ -876,8 +1208,6 @@ const defaultButtonGroups = [
   },
   {
     category: 'nappy',
-    mode: 'event',
-    countDaily: ['wet', 'dirty'],
     buttons: [
       { value: 'wet', label: 'Wet', emoji: '💧' },
       { value: 'dirty', label: 'Dirty', emoji: '💩' },
@@ -885,7 +1215,6 @@ const defaultButtonGroups = [
   },
   {
     category: 'soothe',
-    mode: 'event',
     buttons: [
       { value: 'pram', label: 'Pram', emoji: '🎢' },
       { value: 'rocking', label: 'Rocking', emoji: '🪑' },
@@ -895,7 +1224,6 @@ const defaultButtonGroups = [
   },
   {
     category: '5s',
-    mode: 'event',
     buttons: [
       { value: 'swaddle', label: 'Swaddle', emoji: '🌯' },
       { value: 'side-lying', label: 'Side/Stomach', emoji: '🛏️' },
@@ -905,48 +1233,6 @@ const defaultButtonGroups = [
     ],
   },
 ];
-
-/**
- * Migrate old config formats to new spec
- * - button.type -> group.category
- * - group.showTiming -> button.timer
- * - group.stateful -> group.mode='toggle' + group.onStates
- */
-function migrateButtonGroups(groups) {
-  return groups.map((group) => {
-    const migrated = { ...group };
-
-    // Migrate button.type to group.category
-    if (migrated.category === undefined && migrated.buttons?.length > 0) {
-      migrated.category = migrated.buttons[0].type || 'custom';
-      migrated.buttons = migrated.buttons.map(({ type, ...rest }) => rest);
-    }
-
-    // Migrate showTiming to button.timer
-    if (migrated.showTiming !== undefined) {
-      const timingValues = Array.isArray(migrated.showTiming) ? migrated.showTiming : [migrated.showTiming];
-      migrated.buttons = migrated.buttons.map(btn => ({
-        ...btn,
-        timer: timingValues.includes(btn.value) ? true : btn.timer
-      }));
-      delete migrated.showTiming;
-    }
-
-    // Migrate stateful to mode='toggle' + onStates
-    if (migrated.stateful !== undefined) {
-      migrated.mode = 'toggle';
-      migrated.onStates = Array.isArray(migrated.stateful) ? migrated.stateful : [migrated.stateful];
-      delete migrated.stateful;
-    }
-
-    // Default mode
-    if (!migrated.mode) {
-      migrated.mode = 'event';
-    }
-
-    return migrated;
-  });
-}
 
 function loadButtonGroups() {
   const saved = localStorage.getItem('babytrack-buttons');
@@ -1000,11 +1286,9 @@ function openConfigModal() {
       <div class="config-group-header">
         <label>Category: <input type="text" value="${group.category}" placeholder="category"
                onchange="updateGroupCategory(${groupIndex}, this.value)" style="width: 100px;"></label>
-        <label>Mode:
-          <select onchange="updateGroupOption(${groupIndex}, 'mode', this.value)">
-            <option value="event" ${group.mode === 'event' ? 'selected' : ''}>Event</option>
-            <option value="toggle" ${group.mode === 'toggle' ? 'selected' : ''}>Toggle</option>
-          </select>
+        <label>Stateful:
+          <input type="checkbox" ${group.stateful ? 'checked' : ''}
+                 onchange="updateGroupOption(${groupIndex}, 'stateful', this.checked)">
         </label>
         <button class="add-btn" onclick="addButtonToGroup(${groupIndex})">+ Add Button</button>
       </div>
@@ -1042,11 +1326,6 @@ function createButtonRow(groupIndex, btnIndex, btn) {
              onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'timer', this.checked)">
       ⏲️
     </label>
-    <label title="Count in daily stats">
-      <input type="checkbox" ${btn.counted ? 'checked' : ''}
-             onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'counted', this.checked)">
-      📊
-    </label>
     <button class="remove-btn" onclick="removeButton(${groupIndex}, ${btnIndex})">×</button>
   `;
   return row;
@@ -1064,7 +1343,13 @@ function updateGroupCategory(groupIndex, value) {
 }
 
 function updateGroupOption(groupIndex, option, value) {
-  if (value === '') {
+  if (option === 'stateful') {
+    if (value) {
+      buttonGroups[groupIndex].stateful = true;
+    } else {
+      delete buttonGroups[groupIndex].stateful;
+    }
+  } else if (value === '' || value === false) {
     delete buttonGroups[groupIndex][option];
   } else {
     buttonGroups[groupIndex][option] = value;
@@ -1306,11 +1591,24 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ==================== Initialization ====================
-// Initialize database on load
-initDB();
-
-// Initialize WebSocket sync (after short delay to ensure page is ready)
-setTimeout(() => initWebSocketSync(), 100);
+// Wait for DOM to be fully ready (after all defer scripts have loaded)
+document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize database
+  await initDB();
+  
+  // Initialize reporting after DB is ready (if reporting.js is loaded)
+  if (typeof initReporting === 'function') {
+    initReporting();
+  }
+  
+  renderButtons();
+  updateDailyReport();
+  updateButtonStates();
+  updateUndoRedoButtons();
+  
+  // Initialize WebSocket sync
+  setTimeout(() => initWebSocketSync(), 100);
+});
 
 // Update button states every minute to keep elapsed times current
 setInterval(() => {
@@ -1352,3 +1650,5 @@ async function updateDailyReport() {
   // This will be overridden by the inline script in HTML
   // that has access to D3 and the DOM elements
 }
+
+} // End of browser-only block
