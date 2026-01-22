@@ -28,8 +28,8 @@ class SyncClient {
     this.onInit = options.onInit || (() => {});
     this.onError = options.onError || (() => {});
     
-    // Last update timestamp for incremental sync
-    this.lastUpdatedAt = parseInt(localStorage.getItem('sync-last-updated') || '0', 10);
+    // Cursor (seq) for incremental sync - highest seq received from server
+    this.cursor = parseInt(localStorage.getItem('sync-cursor') || '0', 10);
   }
   
   detectServerUrl() {
@@ -150,14 +150,14 @@ class SyncClient {
   handleInit(msg) {
     console.log('[Sync] Received init with', msg.entries?.length || 0, 'entries');
     
-    // Track the latest updated_at
+    // Track the highest seq received
     if (msg.entries) {
       for (const entry of msg.entries) {
-        if (entry.updated_at > this.lastUpdatedAt) {
-          this.lastUpdatedAt = entry.updated_at;
+        if (entry.seq > this.cursor) {
+          this.cursor = entry.seq;
         }
       }
-      this.saveLastUpdatedAt();
+      this.saveCursor();
     }
     
     this.onInit(msg.entries || [], msg.config || {});
@@ -166,10 +166,10 @@ class SyncClient {
   handleEntry(msg) {
     const entry = msg.entry;
     
-    // Track updated_at
-    if (entry && entry.updated_at > this.lastUpdatedAt) {
-      this.lastUpdatedAt = entry.updated_at;
-      this.saveLastUpdatedAt();
+    // Track seq from received entry
+    if (entry && entry.seq > this.cursor) {
+      this.cursor = entry.seq;
+      this.saveCursor();
     }
     
     this.onEntry(msg.action, entry);
@@ -182,16 +182,16 @@ class SyncClient {
         // Use appropriate action based on deleted flag
         const action = entry.deleted ? 'delete' : 'add';
         this.onEntry(action, entry);
-        if (entry.updated_at > this.lastUpdatedAt) {
-          this.lastUpdatedAt = entry.updated_at;
+        if (entry.seq > this.cursor) {
+          this.cursor = entry.seq;
         }
       }
-      this.saveLastUpdatedAt();
+      this.saveCursor();
     }
   }
   
-  saveLastUpdatedAt() {
-    localStorage.setItem('sync-last-updated', this.lastUpdatedAt.toString());
+  saveCursor() {
+    localStorage.setItem('sync-cursor', this.cursor.toString());
   }
   
   // Send entry to server
@@ -257,7 +257,7 @@ class SyncClient {
     
     this.ws.send(JSON.stringify({
       type: 'sync',
-      since_update: this.lastUpdatedAt,
+      cursor: this.cursor,
       entries: localEntries
     }));
   }
