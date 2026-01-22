@@ -96,6 +96,13 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX idx_entries_family ON entries(family_id);
 		CREATE INDEX idx_entries_updated ON entries(family_id, updated_at);
 		CREATE INDEX idx_entries_ts ON entries(family_id, ts);`,
+
+		// v2: Add seq columns for cursor-based sync
+		`ALTER TABLE families ADD COLUMN seq INTEGER DEFAULT 0;
+		ALTER TABLE entries ADD COLUMN seq INTEGER DEFAULT 0;
+		CREATE INDEX idx_entries_seq ON entries(family_id, seq);
+		UPDATE entries SET seq = rowid;
+		UPDATE families SET seq = COALESCE((SELECT MAX(seq) FROM entries WHERE family_id = families.id), 0);`,
 	}
 
 	for i, m := range migrations {
@@ -131,6 +138,7 @@ type Family struct {
 	Notes     string `json:"notes"`
 	CreatedAt int64  `json:"created_at"`
 	Archived  bool   `json:"archived"`
+	Seq       int64  `json:"seq"`
 }
 
 type AccessLink struct {
@@ -149,6 +157,7 @@ type Entry struct {
 	Value     string `json:"value"`
 	Deleted   bool   `json:"deleted"`
 	UpdatedAt int64  `json:"updated_at"`
+	Seq       int64  `json:"seq"`
 }
 
 // Admin methods
@@ -369,7 +378,7 @@ func (db *DB) DeleteAccessLink(token string) error {
 
 func (db *DB) GetEntries(familyID string, sinceUpdatedAt int64) ([]Entry, error) {
 	rows, err := db.Query(
-		`SELECT id, family_id, ts, type, value, deleted, updated_at 
+		`SELECT id, family_id, ts, type, value, deleted, updated_at, seq 
 		 FROM entries 
 		 WHERE family_id = ? AND updated_at > ? 
 		 ORDER BY updated_at ASC`,
@@ -383,7 +392,7 @@ func (db *DB) GetEntries(familyID string, sinceUpdatedAt int64) ([]Entry, error)
 	var entries []Entry
 	for rows.Next() {
 		var e Entry
-		if err := rows.Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt, &e.Seq); err != nil {
 			return nil, err
 		}
 		entries = append(entries, e)
@@ -393,27 +402,51 @@ func (db *DB) GetEntries(familyID string, sinceUpdatedAt int64) ([]Entry, error)
 
 func (db *DB) UpsertEntry(e *Entry) error {
 	e.UpdatedAt = time.Now().UnixMilli()
-	_, err := db.Exec(
-		`INSERT INTO entries (id, family_id, ts, type, value, deleted, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+
+	// Increment family seq and get the new value
+	var newSeq int64
+	err := db.QueryRow(
+		`UPDATE families SET seq = seq + 1 WHERE id = ? RETURNING seq`,
+		e.FamilyID,
+	).Scan(&newSeq)
+	if err != nil {
+		return err
+	}
+	e.Seq = newSeq
+
+	_, err = db.Exec(
+		`INSERT INTO entries (id, family_id, ts, type, value, deleted, updated_at, seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   ts = excluded.ts,
 		   type = excluded.type,
 		   value = excluded.value,
 		   deleted = excluded.deleted,
-		   updated_at = excluded.updated_at`,
-		e.ID, e.FamilyID, e.Ts, e.Type, e.Value, e.Deleted, e.UpdatedAt,
+		   updated_at = excluded.updated_at,
+		   seq = excluded.seq`,
+		e.ID, e.FamilyID, e.Ts, e.Type, e.Value, e.Deleted, e.UpdatedAt, e.Seq,
 	)
 	return err
 }
 
-func (db *DB) DeleteEntry(familyID, id string) error {
+func (db *DB) DeleteEntry(familyID, id string) (int64, error) {
 	now := time.Now().UnixMilli()
-	_, err := db.Exec(
-		"UPDATE entries SET deleted = 1, updated_at = ? WHERE id = ? AND family_id = ?",
-		now, id, familyID,
+
+	// Increment family seq and get the new value
+	var newSeq int64
+	err := db.QueryRow(
+		`UPDATE families SET seq = seq + 1 WHERE id = ? RETURNING seq`,
+		familyID,
+	).Scan(&newSeq)
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = db.Exec(
+		"UPDATE entries SET deleted = 1, updated_at = ?, seq = ? WHERE id = ? AND family_id = ?",
+		now, newSeq, id, familyID,
 	)
-	return err
+	return newSeq, err
 }
 
 // Config methods
@@ -444,7 +477,7 @@ func (db *DB) SaveConfig(familyID, data string) error {
 // GetEntriesForDate returns all non-deleted entries for a family within a date range
 func (db *DB) GetEntriesForDate(familyID string, startMs, endMs int64) ([]Entry, error) {
 	rows, err := db.Query(
-		`SELECT id, family_id, ts, type, value, deleted, updated_at 
+		`SELECT id, family_id, ts, type, value, deleted, updated_at, seq 
 		 FROM entries 
 		 WHERE family_id = ? AND ts >= ? AND ts < ? AND deleted = 0
 		 ORDER BY ts ASC`,
@@ -458,7 +491,7 @@ func (db *DB) GetEntriesForDate(familyID string, startMs, endMs int64) ([]Entry,
 	var entries []Entry
 	for rows.Next() {
 		var e Entry
-		if err := rows.Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt, &e.Seq); err != nil {
 			return nil, err
 		}
 		entries = append(entries, e)

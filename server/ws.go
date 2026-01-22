@@ -235,7 +235,8 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 		s.hub.Broadcast(c.familyID, broadcast, c)
 
 	case "delete":
-		if err := s.db.DeleteEntry(c.familyID, msg.ID); err != nil {
+		seq, err := s.db.DeleteEntry(c.familyID, msg.ID)
+		if err != nil {
 			slog.Error("failed to delete entry", "error", err, "family_id", c.familyID, "entry_id", msg.ID)
 			return
 		}
@@ -244,6 +245,7 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 			"type":   "entry",
 			"action": "delete",
 			"id":     msg.ID,
+			"seq":    seq,
 		})
 		s.hub.Broadcast(c.familyID, broadcast, c)
 	}
