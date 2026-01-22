@@ -58,13 +58,6 @@ test.describe('Client Workflow', () => {
     await expect(feedButton).toBeVisible();
     await feedButton.click();
     await expect(feedButton).toHaveClass(/fading/);
-    await page.waitForTimeout(300);
-
-    // Verify event appears in local log
-    const logTab = page.locator('button.tab-btn[data-tab="log"]');
-    if (await logTab.isVisible()) {
-      await logTab.click();
-    }
     await expect(page.locator('.event-entry', { hasText: 'feed' })).toBeVisible();
   });
 
@@ -93,10 +86,10 @@ test.describe('Client Workflow', () => {
     await expect(wetButton1).toBeVisible();
     await wetButton1.click();
 
-    // Client 2 logs a different unique event - use dirty nappy
-    const dirtyButton2 = page2.locator('button.action[data-type="nappy"][data-value="dirty"]');
-    await expect(dirtyButton2).toBeVisible();
-    await dirtyButton2.click();
+    // Client 2 logs a different unique event - use pram
+    const pram = page2.locator('button.action[data-type="soothe"][data-value="pram"]');
+    await expect(pram).toBeVisible();
+    await pram.click();
 
     // Look for the event-type span containing "nappy" in the visible event entry
     await expect(page1.locator('.event-type:has-text("nappy")')).toBeVisible();
@@ -120,11 +113,7 @@ test.describe('Client Workflow', () => {
     // Summary should show the nappy event (wet = nappy type)
     await expect(adminPage.locator('#summary-totals')).toBeVisible();
     // The totals should contain nappy count
-    await expect(adminPage.locator('#summary-totals', { hasText: 'nappy' })).toBeVisible({ timeout: 5000 });
-
-    await context1.close();
-    await context2.close();
-    await adminContext.close();
+    await expect(adminPage.locator('#summary-totals', { hasText: 'nappy' })).toBeVisible();
   });
 
   test('second client offline and syncs on reconnect', async ({ browser }) => {
