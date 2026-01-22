@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,27 @@ import (
 func init() {
 	initLogger()
 }
+
+// skipUntilType reads messages until it finds one with the given type, skipping init/presence
+func skipUntilType(t *testing.T, conn *websocket.Conn, wantType string) map[string]any {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("failed to read message while waiting for %s: %v", wantType, err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(msg, &m); err != nil {
+			t.Fatalf("failed to parse message: %v", err)
+		}
+		if m["type"] == wantType {
+			return m
+		}
+		// Skip presence and init messages
+	}
+}
+
 func TestWebSocketConnection(t *testing.T) {
 	// Setup
 	path := t.TempDir() + "/test.db"
@@ -571,5 +593,134 @@ func TestSyncDeletedEntryBroadcast(t *testing.T) {
 	}
 	if received["id"] != "synced-deleted-entry" {
 		t.Errorf("expected id=synced-deleted-entry, got %v", received["id"])
+	}
+}
+
+func TestEntryAck(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	family, _ := db.CreateFamily("Test Baby", "")
+	link, _ := db.CreateAccessLink(family.ID, "Client", nil)
+
+	s := &Server{db: db, hub: NewHub(db)}
+
+	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.Dialer{}
+	headers := http.Header{}
+	headers.Add("Cookie", "client_session="+link.Token)
+
+	conn, resp, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("failed to connect: %v (resp: %v)", err, resp)
+	}
+	defer conn.Close()
+
+	// Skip init message
+	conn.ReadMessage()
+
+	// Send an entry
+	entry := map[string]any{
+		"type":   "entry",
+		"action": "add",
+		"entry": map[string]any{
+			"id":    "test-entry-ack",
+			"ts":    time.Now().UnixMilli(),
+			"type":  "feed",
+			"value": "bf",
+		},
+	}
+	entryJSON, _ := json.Marshal(entry)
+	conn.WriteMessage(websocket.TextMessage, entryJSON)
+
+	// Read response - should be entry_ack (skip init/presence if needed)
+	ack := skipUntilType(t, conn, "entry_ack")
+
+	if ack["id"] != "test-entry-ack" {
+		t.Errorf("expected id=test-entry-ack, got %v", ack["id"])
+	}
+	seq, ok := ack["seq"].(float64)
+	if !ok || seq != 1 {
+		t.Errorf("expected seq=1, got %v", ack["seq"])
+	}
+}
+
+func TestSyncRequest(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	family, _ := db.CreateFamily("Test Baby", "")
+	link, _ := db.CreateAccessLink(family.ID, "Client", nil)
+
+	// Create some entries
+	for i := 1; i <= 5; i++ {
+		e := &Entry{
+			ID:       fmt.Sprintf("entry-%d", i),
+			FamilyID: family.ID,
+			Ts:       int64(i * 1000),
+			Type:     "feed",
+			Value:    "bf",
+		}
+		db.UpsertEntry(e)
+	}
+
+	s := &Server{db: db, hub: NewHub(db)}
+
+	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	dialer := websocket.Dialer{}
+	headers := http.Header{}
+	headers.Add("Cookie", "client_session="+link.Token)
+
+	conn, resp, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("failed to connect: %v (resp: %v)", err, resp)
+	}
+	defer conn.Close()
+
+	// Skip init message
+	conn.ReadMessage()
+
+	// Send sync_request with cursor=2
+	syncReq := map[string]any{
+		"type":   "sync_request",
+		"cursor": 2,
+		"limit":  10,
+	}
+	reqJSON, _ := json.Marshal(syncReq)
+	conn.WriteMessage(websocket.TextMessage, reqJSON)
+
+	// Read sync_response (skip init/presence if needed)
+	resp2 := skipUntilType(t, conn, "sync_response")
+
+	entries, ok := resp2["entries"].([]any)
+	if !ok {
+		t.Fatalf("expected entries array, got %T", resp2["entries"])
+	}
+	if len(entries) != 3 {
+		t.Errorf("expected 3 entries (seq 3,4,5), got %d", len(entries))
+	}
+
+	cursor, ok := resp2["cursor"].(float64)
+	if !ok || cursor != 5 {
+		t.Errorf("expected cursor=5, got %v", resp2["cursor"])
+	}
+
+	hasMore, ok := resp2["has_more"].(bool)
+	if !ok || hasMore {
+		t.Errorf("expected has_more=false, got %v", resp2["has_more"])
 	}
 }

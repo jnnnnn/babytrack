@@ -114,7 +114,9 @@ type WSMessage struct {
 	Entries     json.RawMessage `json:"entries,omitempty"` // for bulk sync
 	ID          string          `json:"id,omitempty"`
 	Data        json.RawMessage `json:"data,omitempty"`
-	SinceUpdate int64           `json:"since_update,omitempty"` // for incremental sync
+	SinceUpdate int64           `json:"since_update,omitempty"` // deprecated: for old clients
+	Cursor      int64           `json:"cursor,omitempty"`       // seq cursor for sync
+	Limit       int             `json:"limit,omitempty"`        // batch size for sync
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +194,7 @@ func (c *Client) readPump(s *Server) {
 		switch msg.Type {
 		case "entry":
 			s.handleEntryMessage(c, msg)
-		case "sync":
+		case "sync", "sync_request":
 			s.handleSyncMessage(c, msg)
 		case "config":
 			s.handleConfigMessage(c, msg)
@@ -226,6 +228,14 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 			return
 		}
 
+		// Send entry_ack to the submitting client
+		ack, _ := json.Marshal(map[string]any{
+			"type": "entry_ack",
+			"id":   entry.ID,
+			"seq":  entry.Seq,
+		})
+		c.send <- ack
+
 		// Broadcast to other clients
 		broadcast, _ := json.Marshal(map[string]any{
 			"type":   "entry",
@@ -240,6 +250,14 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 			slog.Error("failed to delete entry", "error", err, "family_id", c.familyID, "entry_id", msg.ID)
 			return
 		}
+
+		// Send entry_ack to the submitting client
+		ack, _ := json.Marshal(map[string]any{
+			"type": "entry_ack",
+			"id":   msg.ID,
+			"seq":  seq,
+		})
+		c.send <- ack
 
 		broadcast, _ := json.Marshal(map[string]any{
 			"type":   "entry",
@@ -264,12 +282,11 @@ func (s *Server) handleConfigMessage(c *Client, msg WSMessage) {
 	s.hub.Broadcast(c.familyID, broadcast, c)
 }
 
-// handleSyncMessage handles incremental sync requests from clients
-// Client sends: {"type": "sync", "since_update": 1234567890, "entries": [...]}
-// Server responds with entries newer than since_update
-// Server also processes any entries the client sends
+// handleSyncMessage handles sync requests from clients
+// New protocol: {"type": "sync_request", "cursor": 123, "limit": 500}
+// Also supports legacy: {"type": "sync", "since_update": 1234567890, "entries": [...]}
 func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
-	// First, process any entries the client is sending
+	// First, process any entries the client is sending (legacy bulk sync)
 	if len(msg.Entries) > 0 {
 		var clientEntries []Entry
 		if err := json.Unmarshal(msg.Entries, &clientEntries); err == nil {
@@ -280,13 +297,22 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 					continue
 				}
 
-				// Broadcast to other clients - use appropriate action based on deleted flag
+				// Send entry_ack for each entry
+				ack, _ := json.Marshal(map[string]any{
+					"type": "entry_ack",
+					"id":   e.ID,
+					"seq":  e.Seq,
+				})
+				c.send <- ack
+
+				// Broadcast to other clients
 				var broadcast []byte
 				if e.Deleted {
 					broadcast, _ = json.Marshal(map[string]any{
 						"type":   "entry",
 						"action": "delete",
 						"id":     e.ID,
+						"seq":    e.Seq,
 					})
 				} else {
 					broadcast, _ = json.Marshal(map[string]any{
@@ -300,16 +326,24 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 		}
 	}
 
-	// Then send server entries newer than client's last update
-	entries, err := s.db.GetEntries(c.familyID, msg.SinceUpdate)
+	// Use cursor-based sync with GetEntriesSinceCursor
+	entries, hasMore, err := s.db.GetEntriesSinceCursor(c.familyID, msg.Cursor, msg.Limit)
 	if err != nil {
 		slog.Error("failed to get entries for sync", "error", err, "family_id", c.familyID)
 		return
 	}
 
+	// Compute new cursor from highest seq in response
+	newCursor := msg.Cursor
+	if len(entries) > 0 {
+		newCursor = entries[len(entries)-1].Seq
+	}
+
 	resp, _ := json.Marshal(map[string]any{
-		"type":    "sync",
-		"entries": entries,
+		"type":     "sync_response",
+		"entries":  entries,
+		"cursor":   newCursor,
+		"has_more": hasMore,
 	})
 	c.send <- resp
 }
