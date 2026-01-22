@@ -400,6 +400,45 @@ func (db *DB) GetEntries(familyID string, sinceUpdatedAt int64) ([]Entry, error)
 	return entries, rows.Err()
 }
 
+// GetEntriesSinceCursor returns entries where seq > cursor, ordered by seq.
+// Returns up to limit entries plus a has_more flag for pagination.
+func (db *DB) GetEntriesSinceCursor(familyID string, cursor int64, limit int) ([]Entry, bool, error) {
+	if limit <= 0 {
+		limit = 500 // default batch size
+	}
+	// Fetch one extra to detect has_more
+	rows, err := db.Query(
+		`SELECT id, family_id, ts, type, value, deleted, updated_at, seq 
+		 FROM entries 
+		 WHERE family_id = ? AND seq > ? 
+		 ORDER BY seq ASC
+		 LIMIT ?`,
+		familyID, cursor, limit+1,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var entries []Entry
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt, &e.Seq); err != nil {
+			return nil, false, err
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := len(entries) > limit
+	if hasMore {
+		entries = entries[:limit] // trim the extra
+	}
+	return entries, hasMore, nil
+}
+
 func (db *DB) UpsertEntry(e *Entry) error {
 	e.UpdatedAt = time.Now().UnixMilli()
 

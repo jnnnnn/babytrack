@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,6 +142,99 @@ func TestSeqIncrement(t *testing.T) {
 		if e.ID == "entry-2" && e.Seq != 4 {
 			t.Errorf("expected entry-2 seq=4, got %d", e.Seq)
 		}
+	}
+}
+
+func TestGetEntriesSinceCursor(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+	defer os.Remove(path)
+
+	// Create a family
+	family, err := db.CreateFamily("Test Baby", "")
+	if err != nil {
+		t.Fatalf("failed to create family: %v", err)
+	}
+
+	// Create 5 entries
+	for i := 1; i <= 5; i++ {
+		entry := &Entry{
+			ID:       fmt.Sprintf("entry-%d", i),
+			FamilyID: family.ID,
+			Ts:       int64(i * 1000),
+			Type:     "feed",
+			Value:    fmt.Sprintf("value-%d", i),
+		}
+		if err := db.UpsertEntry(entry); err != nil {
+			t.Fatalf("failed to create entry %d: %v", i, err)
+		}
+	}
+
+	// Test cursor=0 returns all entries
+	entries, hasMore, err := db.GetEntriesSinceCursor(family.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("failed to get entries: %v", err)
+	}
+	if len(entries) != 5 {
+		t.Errorf("expected 5 entries, got %d", len(entries))
+	}
+	if hasMore {
+		t.Error("expected hasMore=false")
+	}
+
+	// Test cursor=2 returns entries 3,4,5
+	entries, hasMore, err = db.GetEntriesSinceCursor(family.ID, 2, 10)
+	if err != nil {
+		t.Fatalf("failed to get entries: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("expected 3 entries (seq 3,4,5), got %d", len(entries))
+	}
+	if entries[0].Seq != 3 {
+		t.Errorf("expected first entry seq=3, got %d", entries[0].Seq)
+	}
+
+	// Test pagination with limit=2
+	entries, hasMore, err = db.GetEntriesSinceCursor(family.ID, 0, 2)
+	if err != nil {
+		t.Fatalf("failed to get entries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(entries))
+	}
+	if !hasMore {
+		t.Error("expected hasMore=true")
+	}
+	if entries[1].Seq != 2 {
+		t.Errorf("expected last entry seq=2, got %d", entries[1].Seq)
+	}
+
+	// Continue pagination from cursor=2
+	entries, hasMore, err = db.GetEntriesSinceCursor(family.ID, 2, 2)
+	if err != nil {
+		t.Fatalf("failed to get entries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(entries))
+	}
+	if !hasMore {
+		t.Error("expected hasMore=true")
+	}
+
+	// Final page
+	entries, hasMore, err = db.GetEntriesSinceCursor(family.ID, 4, 2)
+	if err != nil {
+		t.Fatalf("failed to get entries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(entries))
+	}
+	if hasMore {
+		t.Error("expected hasMore=false")
 	}
 }
 
