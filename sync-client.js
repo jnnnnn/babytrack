@@ -64,8 +64,8 @@ class SyncClient {
         console.log('[Sync] Connected to server');
         this.onConnect();
         
-        // Flush offline queue
-        this.flushOfflineQueue();
+        // Send initial sync_request with current cursor
+        this.sendSyncRequest();
       };
       
       this.ws.onclose = () => {
@@ -125,6 +125,9 @@ class SyncClient {
         case 'entry':
           this.handleEntry(msg);
           break;
+        case 'entry_ack':
+          this.handleEntryAck(msg);
+          break;
         case 'config':
           // Process the new configuration structure
           this.onConfig(msg.data);
@@ -135,6 +138,9 @@ class SyncClient {
           break;
         case 'sync':
           this.handleSync(msg);
+          break;
+        case 'sync_response':
+          this.handleSyncResponse(msg);
           break;
         case 'pong':
           // Heartbeat response
@@ -175,8 +181,22 @@ class SyncClient {
     this.onEntry(msg.action, entry);
   }
   
+  handleEntryAck(msg) {
+    // Entry was persisted by server, remove from pending queue
+    console.log('[Sync] Entry ack:', msg.id, 'seq:', msg.seq);
+    
+    // Update cursor if this seq is higher
+    if (msg.seq > this.cursor) {
+      this.cursor = msg.seq;
+      this.saveCursor();
+    }
+    
+    // Could notify UI that entry was confirmed
+    // For now, just log it
+  }
+  
   handleSync(msg) {
-    // Response to incremental sync request
+    // Legacy: Response to incremental sync request
     if (msg.entries) {
       for (const entry of msg.entries) {
         // Use appropriate action based on deleted flag
@@ -188,6 +208,45 @@ class SyncClient {
       }
       this.saveCursor();
     }
+  }
+  
+  handleSyncResponse(msg) {
+    // New cursor-based sync response
+    console.log('[Sync] Received sync_response:', msg.entries?.length || 0, 'entries, has_more:', msg.has_more);
+    
+    if (msg.entries) {
+      for (const entry of msg.entries) {
+        // Use appropriate action based on deleted flag
+        const action = entry.deleted ? 'delete' : 'add';
+        this.onEntry(action, entry);
+      }
+    }
+    
+    // Update cursor from response
+    if (msg.cursor > this.cursor) {
+      this.cursor = msg.cursor;
+      this.saveCursor();
+    }
+    
+    // If more data available, request next page
+    if (msg.has_more) {
+      this.sendSyncRequest();
+    } else {
+      // Sync complete, now flush offline queue
+      console.log('[Sync] Initial sync complete, flushing offline queue');
+      this.flushOfflineQueue();
+    }
+  }
+  
+  sendSyncRequest() {
+    if (!this.connected || !this.ws) return;
+    
+    console.log('[Sync] Sending sync_request with cursor:', this.cursor);
+    this.ws.send(JSON.stringify({
+      type: 'sync_request',
+      cursor: this.cursor,
+      limit: 500
+    }));
   }
   
   saveCursor() {
@@ -251,10 +310,17 @@ class SyncClient {
     }
   }
   
-  // Request incremental sync
+  // Request incremental sync (legacy API, use sendSyncRequest for cursor-based sync)
   requestSync(localEntries = []) {
     if (!this.connected || !this.ws) return;
     
+    // If no local entries to sync, just use sendSyncRequest
+    if (localEntries.length === 0) {
+      this.sendSyncRequest();
+      return;
+    }
+    
+    // Legacy bulk sync for local entries
     this.ws.send(JSON.stringify({
       type: 'sync',
       cursor: this.cursor,
