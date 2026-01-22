@@ -8,7 +8,7 @@ test.describe('Client Workflow', () => {
     // Admin creates a family and TWO access links (one per client)
     const context = await browser.newContext();
     const page = await context.newPage();
-    
+
     await page.goto('/admin');
     await page.fill('#login-username', 'admin');
     await page.fill('#login-password', 'testpass123');
@@ -46,7 +46,7 @@ test.describe('Client Workflow', () => {
 
     // Should redirect to the main app
     await expect(page).toHaveURL(/\?family=/);
-    
+
     // Should see the baby tracking UI with action buttons
     await expect(page.locator('.container')).toBeVisible();
     const buttons = page.locator('button.action');
@@ -72,17 +72,17 @@ test.describe('Client Workflow', () => {
     // Open two browser contexts - simulating two different clients
     const context1 = await browser.newContext();
     const context2 = await browser.newContext();
-    
+
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
-    
+
     const tokenPath = new URL(accessLinkUrl).pathname;
 
     // Page1 accesses the app
     await page1.goto(tokenPath);
     await expect(page1).toHaveURL(/\?family=/);
     await expect(page1.locator('.container')).toBeVisible();
-    
+
     // Page2 accesses the app
     await page2.goto(tokenPath);
     await expect(page2).toHaveURL(/\?family=/);
@@ -92,32 +92,22 @@ test.describe('Client Workflow', () => {
     const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
     await expect(wetButton1).toBeVisible();
     await wetButton1.click();
-    await page1.waitForTimeout(300);
 
-    // Verify client 1 sees the event
-    const logTab1 = page1.locator('button.tab-btn[data-tab="log"]');
-    if (await logTab1.isVisible()) {
-      await logTab1.click();
-    }
+    // Client 2 logs a different unique event - use dirty nappy
+    const dirtyButton2 = page2.locator('button.action[data-type="nappy"][data-value="dirty"]');
+    await expect(dirtyButton2).toBeVisible();
+    await dirtyButton2.click();
+
     // Look for the event-type span containing "nappy" in the visible event entry
     await expect(page1.locator('.event-type:has-text("nappy")')).toBeVisible();
 
-    // Wait for sync to propagate  
-    await page1.waitForTimeout(500);
-
-    // Check client 2 received the event via WebSocket broadcast
-    const logTab2 = page2.locator('button.tab-btn[data-tab="log"]');
-    if (await logTab2.isVisible()) {
-      await logTab2.click();
-    }
-    
     // Client 2 should see the wet nappy event from client 1 via WebSocket
-    await expect(page2.locator('.event-type:has-text("nappy")')).toBeVisible({ timeout: 10000 });
+    await expect(page2.locator('.event-type:has-text("nappy")')).toBeVisible();
 
     // Also verify server persisted - open admin and check summary
     const adminContext = await browser.newContext();
     const adminPage = await adminContext.newPage();
-    
+
     await adminPage.goto('/admin');
     await adminPage.fill('#login-username', 'admin');
     await adminPage.fill('#login-password', 'testpass123');
@@ -126,7 +116,7 @@ test.describe('Client Workflow', () => {
 
     await adminPage.locator('.family-item', { hasText: familyName }).click();
     await expect(adminPage.locator('#detail-view')).toBeVisible();
-    
+
     // Summary should show the nappy event (wet = nappy type)
     await expect(adminPage.locator('#summary-totals')).toBeVisible();
     // The totals should contain nappy count
@@ -135,5 +125,32 @@ test.describe('Client Workflow', () => {
     await context1.close();
     await context2.close();
     await adminContext.close();
+  });
+
+  test('second client offline and syncs on reconnect', async ({ browser }) => {
+    // Open two browser contexts - simulating two different clients
+    const context1 = await browser.newContext();
+
+    const page1 = await context1.newPage();
+
+    const tokenPath = new URL(accessLinkUrl).pathname;
+
+    // Page1 accesses the app
+    await page1.goto(tokenPath);
+    await expect(page1).toHaveURL(/\?family=/);
+    await expect(page1.locator('.container')).toBeVisible();
+    const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
+    await expect(wetButton1).toBeVisible()
+    await wetButton1.click();
+
+    // client 2 comes online
+    const context2 = await browser.newContext();
+    const page2 = await context2.newPage();
+    await page2.goto(tokenPath);
+    await expect(page2).toHaveURL(/\?family=/);
+    await expect(page2.locator('.container')).toBeVisible();
+
+    // Client 2 should see the wet nappy event from client 1 via sync on reconnect
+    await expect(page2.locator('.event-type:has-text("nappy")')).toBeVisible();
   });
 });
