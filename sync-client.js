@@ -295,11 +295,13 @@ class SyncClient {
       // Validate the config structure before sending
       const validatedConfig = config.map(group => ({
         category: group.category,
-        stateful: group.stateful,
+        stateful: group.stateful || false,
         buttons: group.buttons.map(btn => ({
+          value: btn.value,
           label: btn.label,
-          timing: btn.timing,
-          counted: btn.counted
+          emoji: btn.emoji,
+          showTiming: btn.showTiming || false,
+          countDaily: btn.countDaily || false
         }))
       }));
 

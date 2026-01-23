@@ -111,9 +111,7 @@ test.describe('Client Workflow', () => {
     await expect(adminPage.locator('#detail-view')).toBeVisible();
 
     // Summary should show the nappy event (wet = nappy type)
-    await expect(adminPage.locator('#summary-totals')).toBeVisible();
-    // The totals should contain nappy count
-    await expect(adminPage.locator('#summary-totals', { hasText: 'nappy' })).toBeVisible();
+    await expect(adminPage.locator('#summary-totals')).toContainText('nappy');
   });
 
   test('second client offline and syncs on reconnect', async ({ browser }) => {

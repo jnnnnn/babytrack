@@ -768,49 +768,21 @@ async function updateButtonStates() {
   buttonGroups.forEach((group) => {
     const categoryEntries = activeEntries.filter((e) => e.type === group.category);
     const lastEntry = [...categoryEntries].pop();
+    const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
 
-    // Determine stateful values: explicit stateful OR implicit from showTiming
-    const statefulValues = group.stateful
-      ? (Array.isArray(group.stateful) ? group.stateful : [group.stateful])
-      : group.showTiming
-        ? (Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming])
-        : null;
+    // Get buttons with showTiming enabled
+    const timingButtons = group.buttons.filter((btn) => btn.showTiming);
+    const timingValues = timingButtons.map((btn) => btn.value);
 
-    // Handle showTiming: show elapsed time on specific button(s)
-    // Skip if stateful is also defined (stateful handler will show timing)
-    if (group.showTiming && !group.stateful) {
-      const timingValues = Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming];
-      const isOn = lastEntry && timingValues.includes(lastEntry.value);
-      const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
-
-      group.buttons.forEach((btn) => {
-        const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
-        if (!button) return;
-
-        const isOnButton = timingValues.includes(btn.value);
-        if (lastEntry) {
-          // Show timing on the active state button, highlight appropriately
-          const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
-          updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
-        } else {
-          // No entries - show timing buttons as inactive
-          const buttonConfig = group.buttons.find((b) => b.value === btn.value);
-          updateButtonDisplay(button, buttonConfig?.label || btn.value, null, false);
-        }
-      });
-    }
-
-    // Handle stateful: highlight buttons based on current state
     if (group.stateful) {
-      const onValues = Array.isArray(group.stateful) ? group.stateful : [group.stateful];
-      const isOn = lastEntry && onValues.includes(lastEntry.value);
-      const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
+      // Stateful group: buttons with showTiming are "on" states
+      const isOn = lastEntry && timingValues.includes(lastEntry.value);
 
       group.buttons.forEach((btn) => {
         const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
         if (!button) return;
 
-        const isOnButton = onValues.includes(btn.value);
+        const isOnButton = btn.showTiming;
         if (lastEntry) {
           // Show timing on the active state button
           const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
@@ -818,6 +790,24 @@ async function updateButtonStates() {
         } else {
           // No entries - default to "off" state (first non-on button is active)
           updateButtonDisplay(button, btn.label, null, !isOnButton);
+        }
+      });
+    } else if (timingButtons.length > 0) {
+      // Non-stateful with showTiming: show elapsed time on specific button(s)
+      const isOn = lastEntry && timingValues.includes(lastEntry.value);
+
+      group.buttons.forEach((btn) => {
+        const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
+        if (!button) return;
+
+        const isOnButton = btn.showTiming;
+        if (lastEntry) {
+          // Show timing on the active state button, highlight appropriately
+          const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
+          updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
+        } else {
+          // No entries - show timing buttons as inactive
+          updateButtonDisplay(button, btn.label, null, false);
         }
       });
     }
@@ -860,30 +850,27 @@ function goToToday() {
 const defaultButtonGroups = [
   {
     category: 'feed',
-    showTiming: 'bf',  // Show timing on button with this value
-    countDaily: 'bf',  // Count this value in daily stats
     buttons: [
-      { value: 'bf', label: 'Feed', emoji: '🤱' },
+      { value: 'bf', label: 'Feed', emoji: '🤱', showTiming: true, countDaily: true },
       { value: 'play', label: 'Play', emoji: '🎾' },
       { value: 'spew', label: 'Spew', emoji: '🤮' },
     ],
   },
   {
     category: 'sleep',
-    stateful: ['sleeping', 'nap'],  // These values = "on" state
+    stateful: true,
     buttons: [
-      { value: 'sleeping', label: 'Sleeping', emoji: '' },
-      { value: 'nap', label: 'Nap', emoji: '' },
+      { value: 'sleeping', label: 'Sleeping', emoji: '', showTiming: true },
+      { value: 'nap', label: 'Nap', emoji: '', showTiming: true },
       { value: 'awake', label: 'Awake', emoji: '' },
       { value: 'grizzle', label: 'Grizzle', emoji: '' },
     ],
   },
   {
     category: 'nappy',
-    countDaily: ['wet', 'dirty'],  // Count each separately
     buttons: [
-      { value: 'wet', label: 'Wet', emoji: '💧' },
-      { value: 'dirty', label: 'Dirty', emoji: '💩' },
+      { value: 'wet', label: 'Wet', emoji: '💧', countDaily: true },
+      { value: 'dirty', label: 'Dirty', emoji: '💩', countDaily: true },
     ],
   },
   {
@@ -907,19 +894,49 @@ const defaultButtonGroups = [
   },
 ];
 
-// Migrate old format (button.type) to new format (group.category)
+// Migrate old format to new format with button-level flags
 function migrateButtonGroups(groups) {
   return groups.map((group) => {
-    // Already migrated if category exists
-    if (group.category !== undefined) {
-      return group;
+    // Handle very old format (button.type)
+    if (group.category === undefined) {
+      const category = group.buttons.length > 0 ? group.buttons[0].type : 'custom';
+      group = {
+        category,
+        buttons: group.buttons.map(({ type, ...rest }) => rest),
+      };
     }
-    // Derive category from first button's type
-    const category = group.buttons.length > 0 ? group.buttons[0].type : 'custom';
-    return {
-      category,
-      buttons: group.buttons.map(({ type, ...rest }) => rest),
+
+    // Migrate group-level showTiming/countDaily to button-level
+    const showTimingValues = group.showTiming
+      ? (Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming])
+      : [];
+    const countDailyValues = group.countDaily
+      ? (Array.isArray(group.countDaily) ? group.countDaily : [group.countDaily])
+      : [];
+    
+    // Migrate group-level stateful array to boolean + button-level showTiming
+    const statefulValues = Array.isArray(group.stateful) ? group.stateful : [];
+    const isStateful = group.stateful === true || statefulValues.length > 0;
+
+    // Migrate timing/counted to showTiming/countDaily
+    const migratedButtons = group.buttons.map((btn) => {
+      const migrated = { ...btn };
+      // From group-level
+      if (showTimingValues.includes(btn.value)) migrated.showTiming = true;
+      if (countDailyValues.includes(btn.value)) migrated.countDaily = true;
+      if (statefulValues.includes(btn.value)) migrated.showTiming = true;
+      // From old button-level names
+      if (btn.timing) { migrated.showTiming = true; delete migrated.timing; }
+      if (btn.counted) { migrated.countDaily = true; delete migrated.counted; }
+      return migrated;
+    });
+
+    const migrated = {
+      category: group.category,
+      buttons: migratedButtons,
     };
+    if (isStateful) migrated.stateful = true;
+    return migrated;
   });
 }
 
@@ -967,8 +984,10 @@ function openConfigModal() {
     groupDiv.innerHTML = `
           <div class="config-group-header">
             <label>Category: <input type="text" value="${group.category}" placeholder="category" 
-                   onchange="updateGroupCategory(${groupIndex}, this.value)" style="width: 100px;"></label>
-            <button class="add-btn" onclick="addButtonToGroup(${groupIndex})">+ Add Button</button>
+                   onchange="updateGroupCategory(${groupIndex}, this.value)" style="width: 80px;"></label>
+            <button class="config-toggle-btn ${group.stateful ? 'active' : ''}" 
+                    onclick="toggleGroupStateful(${groupIndex}, this)">Stateful</button>
+            <button class="add-btn" onclick="addButtonToGroup(${groupIndex})">+ Add</button>
           </div>
           <div class="config-buttons" data-group="${groupIndex}"></div>
         `;
@@ -991,6 +1010,11 @@ function openConfigModal() {
   document.getElementById('config-modal').classList.add('show');
 }
 
+function toggleGroupStateful(groupIndex, btn) {
+  buttonGroups[groupIndex].stateful = !buttonGroups[groupIndex].stateful;
+  btn.classList.toggle('active', buttonGroups[groupIndex].stateful);
+}
+
 function createButtonRow(groupIndex, btnIndex, btn) {
   const row = document.createElement('div');
   row.className = 'config-button-row';
@@ -999,19 +1023,19 @@ function createButtonRow(groupIndex, btnIndex, btn) {
                onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'emoji', this.value)">
         <input type="text" value="${btn.label}" placeholder="Label" 
                onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'label', this.value)">
-        <label>
-          <input type="checkbox" ${btn.timing ? 'checked' : ''} 
-                 onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'timing', this.checked)">
-          ⏲️
-        </label>
-        <label>
-          <input type="checkbox" ${btn.counted ? 'checked' : ''} 
-                 onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'counted', this.checked)">
-          📊
-        </label>
+        <button class="config-toggle-btn ${btn.showTiming ? 'active' : ''}" 
+                onclick="toggleButtonFlag(${groupIndex}, ${btnIndex}, 'showTiming', this)">⏲️</button>
+        <button class="config-toggle-btn ${btn.countDaily ? 'active' : ''}" 
+                onclick="toggleButtonFlag(${groupIndex}, ${btnIndex}, 'countDaily', this)">📊</button>
         <button class="remove-btn" onclick="removeButton(${groupIndex}, ${btnIndex})">×</button>
       `;
   return row;
+}
+
+function toggleButtonFlag(groupIndex, btnIndex, flag, btn) {
+  const current = buttonGroups[groupIndex].buttons[btnIndex][flag];
+  buttonGroups[groupIndex].buttons[btnIndex][flag] = !current;
+  btn.classList.toggle('active', !current);
 }
 
 function updateConfigButton(groupIndex, btnIndex, field, value) {
@@ -1024,23 +1048,6 @@ function updateConfigButton(groupIndex, btnIndex, field, value) {
 
 function updateGroupCategory(groupIndex, value) {
   buttonGroups[groupIndex].category = value;
-}
-
-function updateGroupOption(groupIndex, option, value) {
-  if (value === '') {
-    delete buttonGroups[groupIndex][option];
-  } else {
-    buttonGroups[groupIndex][option] = value;
-  }
-}
-
-function updateGroupOptionMulti(groupIndex, option, selectEl) {
-  const selected = Array.from(selectEl.selectedOptions).map((o) => o.value);
-  if (selected.length === 0) {
-    delete buttonGroups[groupIndex][option];
-  } else {
-    buttonGroups[groupIndex][option] = selected;
-  }
 }
 
 function addButtonToGroup(groupIndex) {
@@ -1332,23 +1339,22 @@ function calculateDailyStats(entries) {
   // Get day boundaries for clipping sleep periods
   const { dayStart, dayEnd } = getDayBoundsAsDate(currentReportDate);
 
-  // Build dynamic counts based on group config
+  // Build dynamic counts based on button-level countDaily flag
   const counts = {};
   buttonGroups.forEach((group) => {
-    if (group.countDaily) {
-      const values = Array.isArray(group.countDaily) ? group.countDaily : [group.countDaily];
-      values.forEach((val) => {
+    group.buttons.forEach((btn) => {
+      if (btn.countDaily) {
         const count = entries.filter((e) => {
-          return e.type === group.category && e.value === val && isEntryInDay(e, dayStart, dayEnd);
+          return e.type === group.category && e.value === btn.value && isEntryInDay(e, dayStart, dayEnd);
         }).length;
-        counts[`${group.category}-${val}`] = {
+        counts[`${group.category}-${btn.value}`] = {
           count,
-          label: group.buttons.find((b) => b.value === val)?.label || val,
+          label: btn.label || btn.value,
           category: group.category,
-          value: val,
+          value: btn.value,
         };
-      });
-    }
+      }
+    });
   });
 
   let totalSleepMinutes = 0;
