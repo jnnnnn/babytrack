@@ -17,10 +17,8 @@ export default defineConfig({
     actionTimeout: isHuman ? 10000 : 5000,
   },
   projects: [
-    {
-      name: 'chromium',
-      use: { browserName: 'chromium' },
-    },
+    { name: 'chromium', use: { browserName: 'chromium' }, },
+    { name: 'firefox', use: { browserName: 'firefox' }, }
   ],
   webServer: {
     command: 'cd server && go build -o babytrackd && ./babytrackd',

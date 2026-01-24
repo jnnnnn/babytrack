@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 func setupTestServer(t *testing.T) (*Server, func()) {
@@ -236,5 +237,107 @@ func TestAdminRequired(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestSummaryTimezone(t *testing.T) {
+	s, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	family, _ := s.db.CreateFamily("Test Baby", "")
+	token, _ := s.db.CreateAdminSession("admin", 24*3600*1000)
+	cookie := &http.Cookie{Name: "admin_session", Value: token}
+
+	// Create an entry at 2026-01-25 08:00:00 Pacific/Auckland (+13:00)
+	// This is 2026-01-24 19:00:00 UTC - i.e., "yesterday" in UTC
+	aucklandTime := "2026-01-25T08:00:00+13:00"
+	parsed, _ := time.Parse(time.RFC3339, aucklandTime)
+	tsMs := parsed.UnixMilli()
+
+	entry := &Entry{
+		ID:        "test-entry-1",
+		FamilyID:  family.ID,
+		Ts:        tsMs,
+		Type:      "feed",
+		Value:     "bottle",
+		UpdatedAt: tsMs,
+	}
+	s.db.UpsertEntry(entry)
+
+	// Query with UTC timezone - should NOT find the entry on 2026-01-25
+	req := httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?date=2026-01-25&tz=UTC", nil)
+	req.SetPathValue("id", family.ID)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+
+	s.adminRequired(s.getFamilySummary)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var summaryUTC DailySummary
+	json.Unmarshal(w.Body.Bytes(), &summaryUTC)
+
+	if summaryUTC.Totals["feed"] != 0 {
+		t.Errorf("expected 0 feeds in UTC 2026-01-25, got %d", summaryUTC.Totals["feed"])
+	}
+
+	// Query with Pacific/Auckland timezone - SHOULD find the entry on 2026-01-25
+	req = httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?date=2026-01-25&tz=Pacific/Auckland", nil)
+	req.SetPathValue("id", family.ID)
+	req.AddCookie(cookie)
+	w = httptest.NewRecorder()
+
+	s.adminRequired(s.getFamilySummary)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var summaryNZ DailySummary
+	json.Unmarshal(w.Body.Bytes(), &summaryNZ)
+
+	if summaryNZ.Totals["feed"] != 1 {
+		t.Errorf("expected 1 feed in Auckland 2026-01-25, got %d", summaryNZ.Totals["feed"])
+	}
+
+	// Verify the entry appears at 08:00 in Auckland timezone
+	if len(summaryNZ.Hours) == 0 {
+		t.Fatal("expected hourly data in Auckland timezone")
+	}
+
+	found := false
+	for _, h := range summaryNZ.Hours {
+		if h.Hour == 8 {
+			for _, e := range h.Entries {
+				if e.Time == "08:00" && e.Type == "feed" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected entry at 08:00 in Auckland timezone, got hours: %+v", summaryNZ.Hours)
+	}
+}
+
+func TestSummaryInvalidTimezone(t *testing.T) {
+	s, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	family, _ := s.db.CreateFamily("Test Baby", "")
+	token, _ := s.db.CreateAdminSession("admin", 24*3600*1000)
+	cookie := &http.Cookie{Name: "admin_session", Value: token}
+
+	req := httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?tz=Invalid/Zone", nil)
+	req.SetPathValue("id", family.ID)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+
+	s.adminRequired(s.getFamilySummary)(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid timezone, got %d", w.Code)
 	}
 }

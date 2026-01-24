@@ -301,19 +301,31 @@ type DailySummary struct {
 func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
 	familyID := r.PathValue("id")
 	dateStr := r.URL.Query().Get("date")
+	tzName := r.URL.Query().Get("tz")
 
-	// Parse date (default to today)
+	// Parse timezone (default to UTC)
+	loc := time.UTC
+	if tzName != "" {
+		parsed, err := time.LoadLocation(tzName)
+		if err != nil {
+			http.Error(w, "invalid timezone", http.StatusBadRequest)
+			return
+		}
+		loc = parsed
+	}
+
+	// Parse date (default to today in client's timezone)
 	var startTime time.Time
 	if dateStr != "" {
-		parsed, err := time.Parse("2006-01-02", dateStr)
+		parsed, err := time.ParseInLocation("2006-01-02", dateStr, loc)
 		if err != nil {
 			http.Error(w, "invalid date format (use YYYY-MM-DD)", http.StatusBadRequest)
 			return
 		}
 		startTime = parsed
 	} else {
-		now := time.Now()
-		startTime = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		now := time.Now().In(loc)
+		startTime = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	}
 
 	endTime := startTime.Add(24 * time.Hour)
@@ -331,7 +343,7 @@ func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
 	totals := make(map[string]int)
 
 	for _, e := range entries {
-		t := time.UnixMilli(e.Ts)
+		t := time.UnixMilli(e.Ts).In(loc)
 		hour := t.Hour()
 
 		hourlyMap[hour] = append(hourlyMap[hour], EntrySummary{

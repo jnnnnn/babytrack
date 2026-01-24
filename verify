@@ -64,6 +64,7 @@ rm -f server/babytrack.db  # Clean DB for reproducible tests
 if $HUMAN_MODE; then
   echo "(Human mode: headed browser, slowMo 1200ms)"
   HUMAN_MODE=1 npx playwright test --project=chromium
+  # HUMAN_MODE=1 npx playwright test --project=firefox --ui
 else
   npx playwright test
 fi
