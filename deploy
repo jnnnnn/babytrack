@@ -6,11 +6,10 @@ cd "$(dirname "$0")"
 echo "=== Verify first ==="
 ./verify
 
-echo "=== Build ==="
-# TODO: cd server && go build -o babytrackd .
-
 echo "=== Deploy to fly.io ==="
-# TODO: cd server && fly deploy
+cd server
+fly deploy --ha=false
 
 echo ""
 echo "✓ Deployed"
+echo "View logs: fly logs -a babytrack"

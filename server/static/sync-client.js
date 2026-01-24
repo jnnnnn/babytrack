@@ -300,7 +300,6 @@ class SyncClient {
           value: btn.value,
           label: btn.label,
           emoji: btn.emoji,
-          showTiming: btn.showTiming || false,
           countDaily: btn.countDaily || false
         }))
       }));

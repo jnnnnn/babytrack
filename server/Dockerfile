@@ -25,6 +25,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/babytrackd .
 
+# Copy static files
+COPY static/ ./
+
 # Create data directory
 RUN mkdir -p /data
 

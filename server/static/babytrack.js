@@ -770,43 +770,39 @@ async function updateButtonStates() {
     const lastEntry = [...categoryEntries].pop();
     const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
 
-    // Get buttons with showTiming enabled
-    const timingButtons = group.buttons.filter((btn) => btn.showTiming);
-    const timingValues = timingButtons.map((btn) => btn.value);
-
     if (group.stateful) {
-      // Stateful group: buttons with showTiming are "on" states
-      const isOn = lastEntry && timingValues.includes(lastEntry.value);
-
       group.buttons.forEach((btn) => {
+        // each button shows a timer for when its own state changed. if it is the last entry, it is active, and shows elapsed time.
+        // if it is inactive, and there are more than two buttons in the group, it shows how long it has been since it was active. 
+        // this means we find its last active, and then the next entry in the group after that.
+        
         const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
         if (!button) return;
 
-        const isOnButton = btn.showTiming;
-        if (lastEntry) {
-          // Show timing on the active state button
-          const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
-          updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
+        const isActive = lastEntry && lastEntry.value === btn.value;
+        
+        if (isActive) {
+          // This button is the current state - show elapsed time since it became active
+          const elapsedTime = formatElapsedTime(new Date(lastEntry.ts).getTime());
+          updateButtonDisplay(button, btn.label, elapsedTime, true);
+        } else if (group.buttons.length > 2) {
+          // Find when this button was last active
+          const lastActiveEntry = [...categoryEntries].reverse().find(e => e.value === btn.value);
+          if (lastActiveEntry) {
+            // Find the next entry after it (which ended this state)
+            const lastActiveIndex = categoryEntries.indexOf(lastActiveEntry);
+            const nextEntry = categoryEntries[lastActiveIndex + 1];
+            if (nextEntry) {
+              const elapsedTime = formatElapsedTime(new Date(nextEntry.ts).getTime());
+              updateButtonDisplay(button, btn.label, elapsedTime, false);
+            } else {
+              updateButtonDisplay(button, btn.label, null, false);
+            }
+          } else {
+            updateButtonDisplay(button, btn.label, null, false);
+          }
         } else {
-          // No entries - default to "off" state (first non-on button is active)
-          updateButtonDisplay(button, btn.label, null, !isOnButton);
-        }
-      });
-    } else if (timingButtons.length > 0) {
-      // Non-stateful with showTiming: show elapsed time on specific button(s)
-      const isOn = lastEntry && timingValues.includes(lastEntry.value);
-
-      group.buttons.forEach((btn) => {
-        const button = document.querySelector(`button[data-type="${group.category}"][data-value="${btn.value}"]`);
-        if (!button) return;
-
-        const isOnButton = btn.showTiming;
-        if (lastEntry) {
-          // Show timing on the active state button, highlight appropriately
-          const showTime = (isOn && isOnButton) || (!isOn && !isOnButton);
-          updateButtonDisplay(button, btn.label, showTime ? elapsed : null, isOnButton ? isOn : !isOn);
-        } else {
-          // No entries - show timing buttons as inactive
+          // Two buttons or less - just show active/inactive without timing for inactive
           updateButtonDisplay(button, btn.label, null, false);
         }
       });
@@ -851,7 +847,7 @@ const defaultButtonGroups = [
   {
     category: 'feed',
     buttons: [
-      { value: 'bf', label: 'Feed', emoji: '🤱', showTiming: true, countDaily: true },
+      { value: 'bf', label: 'Feed', emoji: '🤱', countDaily: true },
       { value: 'play', label: 'Play', emoji: '🎾' },
       { value: 'spew', label: 'Spew', emoji: '🤮' },
     ],
@@ -860,10 +856,8 @@ const defaultButtonGroups = [
     category: 'sleep',
     stateful: true,
     buttons: [
-      { value: 'sleeping', label: 'Sleeping', emoji: '', showTiming: true },
-      { value: 'nap', label: 'Nap', emoji: '', showTiming: true },
       { value: 'awake', label: 'Awake', emoji: '' },
-      { value: 'grizzle', label: 'Grizzle', emoji: '' },
+      { value: 'sleeping', label: 'Sleeping', emoji: ''},
     ],
   },
   {
@@ -878,6 +872,7 @@ const defaultButtonGroups = [
     buttons: [
       { value: 'pram', label: 'Pram', emoji: '🎢' },
       { value: 'rocking', label: 'Rocking', emoji: '🪑' },
+      { value: 'car', label: 'Car', emoji: '🚗' },
       { value: 'wearing', label: 'Wearing', emoji: '🤗' },
       { value: 'feed-to-sleep', label: 'Feed to Sleep', emoji: '🍼😴' },
     ],
@@ -894,59 +889,12 @@ const defaultButtonGroups = [
   },
 ];
 
-// Migrate old format to new format with button-level flags
-function migrateButtonGroups(groups) {
-  return groups.map((group) => {
-    // Handle very old format (button.type)
-    if (group.category === undefined) {
-      const category = group.buttons.length > 0 ? group.buttons[0].type : 'custom';
-      group = {
-        category,
-        buttons: group.buttons.map(({ type, ...rest }) => rest),
-      };
-    }
-
-    // Migrate group-level showTiming/countDaily to button-level
-    const showTimingValues = group.showTiming
-      ? (Array.isArray(group.showTiming) ? group.showTiming : [group.showTiming])
-      : [];
-    const countDailyValues = group.countDaily
-      ? (Array.isArray(group.countDaily) ? group.countDaily : [group.countDaily])
-      : [];
-    
-    // Migrate group-level stateful array to boolean + button-level showTiming
-    const statefulValues = Array.isArray(group.stateful) ? group.stateful : [];
-    const isStateful = group.stateful === true || statefulValues.length > 0;
-
-    // Migrate timing/counted to showTiming/countDaily
-    const migratedButtons = group.buttons.map((btn) => {
-      const migrated = { ...btn };
-      // From group-level
-      if (showTimingValues.includes(btn.value)) migrated.showTiming = true;
-      if (countDailyValues.includes(btn.value)) migrated.countDaily = true;
-      if (statefulValues.includes(btn.value)) migrated.showTiming = true;
-      // From old button-level names
-      if (btn.timing) { migrated.showTiming = true; delete migrated.timing; }
-      if (btn.counted) { migrated.countDaily = true; delete migrated.counted; }
-      return migrated;
-    });
-
-    const migrated = {
-      category: group.category,
-      buttons: migratedButtons,
-    };
-    if (isStateful) migrated.stateful = true;
-    return migrated;
-  });
-}
-
 // Load config from localStorage or use default
 function loadButtonGroups() {
   const saved = localStorage.getItem('babytrack-buttons');
   if (saved) {
     try {
-      const parsed = JSON.parse(saved);
-      return migrateButtonGroups(parsed);
+      return JSON.parse(saved);
     } catch (e) {
       console.error('Failed to parse saved button config:', e);
     }
@@ -1023,8 +971,6 @@ function createButtonRow(groupIndex, btnIndex, btn) {
                onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'emoji', this.value)">
         <input type="text" value="${btn.label}" placeholder="Label" 
                onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'label', this.value)">
-        <button class="config-toggle-btn ${btn.showTiming ? 'active' : ''}" 
-                onclick="toggleButtonFlag(${groupIndex}, ${btnIndex}, 'showTiming', this)">⏲️</button>
         <button class="config-toggle-btn ${btn.countDaily ? 'active' : ''}" 
                 onclick="toggleButtonFlag(${groupIndex}, ${btnIndex}, 'countDaily', this)">📊</button>
         <button class="remove-btn" onclick="removeButton(${groupIndex}, ${btnIndex})">×</button>
