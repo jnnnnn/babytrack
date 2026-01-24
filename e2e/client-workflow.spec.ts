@@ -138,6 +138,6 @@ test.describe('Client Workflow', () => {
     await expect(page2.locator('.container')).toBeVisible();
 
     // Client 2 should see the wet nappy event from client 1 via sync on reconnect
-    await expect(page2.locator('.event-type:has-text("nappy")')).toBeVisible();
+    await expect(page2.locator('.event-type:has-text("nappy")').first()).toBeVisible();
   });
 });

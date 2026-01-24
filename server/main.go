@@ -90,6 +90,6 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func serveFile(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "../"+name)
+		http.ServeFile(w, r, "static/"+name)
 	}
 }
