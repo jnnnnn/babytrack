@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -35,7 +33,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.db.CreateAdminSession(admin.ID, 24*time.Hour)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to create session", err)
 		return
 	}
 
@@ -49,8 +47,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   86400,
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
+	jsonOK(w, map[string]string{"ok": "true"})
 }
 
 func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
@@ -67,8 +64,7 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
+	jsonOK(w, map[string]string{"ok": "true"})
 }
 
 func (s *Server) adminRequired(next http.HandlerFunc) http.HandlerFunc {
@@ -104,8 +100,7 @@ func (s *Server) validateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "admin_id": adminID})
+	jsonOK(w, map[string]string{"status": "ok", "admin_id": adminID})
 }
 
 // Family handlers
@@ -120,7 +115,7 @@ type FamilyWithStats struct {
 func (s *Server) listFamilies(w http.ResponseWriter, r *http.Request) {
 	families, err := s.db.ListFamilies(r.URL.Query().Get("archived") == "true")
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to list families", err)
 		return
 	}
 
@@ -133,8 +128,7 @@ func (s *Server) listFamilies(w http.ResponseWriter, r *http.Request) {
 		result[i].LinkCount, _ = s.db.GetLinkCount(f.ID)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	jsonOK(w, result)
 }
 
 func (s *Server) createFamily(w http.ResponseWriter, r *http.Request) {
@@ -154,13 +148,11 @@ func (s *Server) createFamily(w http.ResponseWriter, r *http.Request) {
 
 	family, err := s.db.CreateFamily(req.Name, req.Notes)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to create family", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(family)
+	jsonCreated(w, family)
 }
 
 func (s *Server) getFamily(w http.ResponseWriter, r *http.Request) {
@@ -171,8 +163,7 @@ func (s *Server) getFamily(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(family)
+	jsonOK(w, family)
 }
 
 func (s *Server) updateFamily(w http.ResponseWriter, r *http.Request) {
@@ -189,13 +180,12 @@ func (s *Server) updateFamily(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.db.UpdateFamily(id, req.Name, req.Notes, req.Archived); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to update family", err)
 		return
 	}
 
 	family, _ := s.db.GetFamily(id)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(family)
+	jsonOK(w, family)
 }
 
 // Access link handlers
@@ -204,12 +194,11 @@ func (s *Server) listAccessLinks(w http.ResponseWriter, r *http.Request) {
 	familyID := r.PathValue("id")
 	links, err := s.db.ListAccessLinks(familyID)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to list access links", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(links)
+	jsonOK(w, links)
 }
 
 func (s *Server) createAccessLink(w http.ResponseWriter, r *http.Request) {
@@ -226,20 +215,18 @@ func (s *Server) createAccessLink(w http.ResponseWriter, r *http.Request) {
 
 	link, err := s.db.CreateAccessLink(familyID, req.Label, req.ExpiresAt)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to create access link", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(link)
+	jsonCreated(w, link)
 }
 
 func (s *Server) deleteAccessLink(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
 
 	if err := s.db.DeleteAccessLink(token); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to delete access link", err)
 		return
 	}
 
@@ -269,14 +256,6 @@ func (s *Server) handleClientToken(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect to app with family context
 	http.Redirect(w, r, "/?family="+link.FamilyID, http.StatusFound)
-}
-
-// Helper to generate random tokens
-
-func generateToken(n int) string {
-	b := make([]byte, n)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 // Summary handler
@@ -334,7 +313,7 @@ func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := s.db.GetEntriesForDate(familyID, startMs, endMs)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "failed to get entries", err)
 		return
 	}
 
@@ -373,6 +352,5 @@ func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
 		Totals: totals,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(summary)
+	jsonOK(w, summary)
 }

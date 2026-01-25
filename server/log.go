@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -41,9 +39,7 @@ func initLogger() {
 
 // requestID generates a short unique ID for request tracing
 func requestID() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return generateToken(8)
 }
 
 // withRequestID adds request ID to context
