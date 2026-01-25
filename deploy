@@ -10,7 +10,7 @@ echo "=== Deploy to fly.io ==="
 cd server
 
 # Ensure admin credentials are set
-if ! fly secrets list -a babytrack | grep -q ADMIN_USER; then
+if ! fly secrets list -a jonobabytrack | grep -q ADMIN_USER; then
   echo "Setting up admin credentials..."
   read -p "Admin username: " admin_user
   read -sp "Admin password: " admin_pass
