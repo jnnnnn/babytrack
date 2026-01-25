@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25.6-alpine AS builder
 
 RUN apk add --no-cache gcc musl-dev
 
@@ -16,7 +16,7 @@ COPY *.go ./
 RUN CGO_ENABLED=1 GOOS=linux go build -o babytrackd .
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine
 
 RUN apk add --no-cache ca-certificates sqlite
 
@@ -26,7 +26,7 @@ WORKDIR /app
 COPY --from=builder /app/babytrackd .
 
 # Copy static files
-COPY static/ ./
+COPY static/ ./static/
 
 # Create data directory
 RUN mkdir -p /data

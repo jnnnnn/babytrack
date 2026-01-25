@@ -8,8 +8,18 @@ echo "=== Verify first ==="
 
 echo "=== Deploy to fly.io ==="
 cd server
+
+# Ensure admin credentials are set
+if ! fly secrets list -a babytrack | grep -q ADMIN_USER; then
+  echo "Setting up admin credentials..."
+  read -p "Admin username: " admin_user
+  read -sp "Admin password: " admin_pass
+  echo
+  fly secrets set ADMIN_USER="$admin_user" ADMIN_PASS="$admin_pass" -a babytrack
+fi
+
 fly deploy --ha=false
 
 echo ""
 echo "✓ Deployed"
-echo "View logs: fly logs -a babytrack"
+echo "View logs: fly logs -a jonobabytrack"
