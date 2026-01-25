@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -280,18 +281,19 @@ type DailySummary struct {
 func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
 	familyID := r.PathValue("id")
 	dateStr := r.URL.Query().Get("date")
-	tzName := r.URL.Query().Get("tz")
+	offsetStr := r.URL.Query().Get("offset")
 
-	// Parse timezone (default to UTC)
-	loc := time.UTC
-	if tzName != "" {
-		parsed, err := time.LoadLocation(tzName)
+	// Parse offset in minutes (default to 0 = UTC)
+	offsetMins := 0
+	if offsetStr != "" {
+		parsed, err := strconv.Atoi(offsetStr)
 		if err != nil {
-			http.Error(w, "invalid timezone", http.StatusBadRequest)
+			http.Error(w, "invalid offset", http.StatusBadRequest)
 			return
 		}
-		loc = parsed
+		offsetMins = parsed
 	}
+	loc := time.FixedZone("client", offsetMins*60)
 
 	// Parse date (default to today in client's timezone)
 	var startTime time.Time

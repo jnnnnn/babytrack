@@ -592,11 +592,11 @@
       const month = String(summaryDate.getMonth() + 1).padStart(2, '0');
       const day = String(summaryDate.getDate()).padStart(2, '0');
       const dateStr = `${year}-${month}-${day}`;
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const offset = -summaryDate.getTimezoneOffset(); // minutes from UTC
       document.getElementById('summary-date').textContent = dateStr;
       
       try {
-        const summary = await api.get(`/admin/families/${currentFamily.id}/summary?date=${dateStr}&tz=${encodeURIComponent(tz)}`);
+        const summary = await api.get(`/admin/families/${currentFamily.id}/summary?date=${dateStr}&offset=${offset}`);
         
         // Totals
         const totals = summary.totals || {};

@@ -18,7 +18,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -o babytrackd .
 # Runtime stage
 FROM alpine
 
-RUN apk add --no-cache ca-certificates sqlite tzdata
+RUN apk add --no-cache ca-certificates sqlite
 
 WORKDIR /app
 

@@ -264,8 +264,8 @@ func TestSummaryTimezone(t *testing.T) {
 	}
 	s.db.UpsertEntry(entry)
 
-	// Query with UTC timezone - should NOT find the entry on 2026-01-25
-	req := httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?date=2026-01-25&tz=UTC", nil)
+	// Query with UTC (offset=0) - should NOT find the entry on 2026-01-25
+	req := httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?date=2026-01-25&offset=0", nil)
 	req.SetPathValue("id", family.ID)
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
@@ -283,8 +283,8 @@ func TestSummaryTimezone(t *testing.T) {
 		t.Errorf("expected 0 feeds in UTC 2026-01-25, got %d", summaryUTC.Totals["feed"])
 	}
 
-	// Query with Pacific/Auckland timezone - SHOULD find the entry on 2026-01-25
-	req = httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?date=2026-01-25&tz=Pacific/Auckland", nil)
+	// Query with Auckland offset (+13:00 = 780 minutes) - SHOULD find the entry on 2026-01-25
+	req = httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?date=2026-01-25&offset=780", nil)
 	req.SetPathValue("id", family.ID)
 	req.AddCookie(cookie)
 	w = httptest.NewRecorder()
@@ -322,7 +322,7 @@ func TestSummaryTimezone(t *testing.T) {
 	}
 }
 
-func TestSummaryInvalidTimezone(t *testing.T) {
+func TestSummaryInvalidOffset(t *testing.T) {
 	s, cleanup := setupTestServer(t)
 	defer cleanup()
 
@@ -330,7 +330,7 @@ func TestSummaryInvalidTimezone(t *testing.T) {
 	token, _ := s.db.CreateAdminSession("admin", 24*3600*1000)
 	cookie := &http.Cookie{Name: "admin_session", Value: token}
 
-	req := httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?tz=Invalid/Zone", nil)
+	req := httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?offset=notanumber", nil)
 	req.SetPathValue("id", family.ID)
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
@@ -338,6 +338,6 @@ func TestSummaryInvalidTimezone(t *testing.T) {
 	s.adminRequired(s.getFamilySummary)(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for invalid timezone, got %d", w.Code)
+		t.Errorf("expected 400 for invalid offset, got %d", w.Code)
 	}
 }
