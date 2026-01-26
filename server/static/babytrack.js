@@ -1764,7 +1764,6 @@ function drawTimeline(entries) {
     if (event.value === 'sleeping' || event.value === 'nap') {
       // Starting to sleep
       sleepStartTime = event.time;
-      sleepStartEvent = event;
       currentState = 1.5; // light sleep
       if (hour >= 0 && hour <= 24) {
         lineData.push({ time: hour, state: currentState });
