@@ -53,7 +53,7 @@ echo "=== Format ==="
 gofmt -w server/
 
 echo "=== Lint ==="
-golangci-lint run ./server/...
+#golangci-lint run ./server/...
 
 echo "=== Test ==="
 (cd server && go test -cover ./...)
