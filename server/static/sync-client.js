@@ -356,7 +356,7 @@ class SyncClient {
     try {
       const stored = localStorage.getItem('sync-offline-queue');
       this.offlineQueue = stored ? JSON.parse(stored) : [];
-    } catch (e) {
+    } catch (_e) {
       this.offlineQueue = [];
     }
   }

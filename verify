@@ -53,7 +53,7 @@ echo "=== Format ==="
 gofmt -w server/
 
 echo "=== Lint ==="
-pnpm eslint server/static/*.js
+pnpm eslint server/static/*.js server/static/*.html
 
 echo "=== Test ==="
 (cd server && go test -cover ./...)

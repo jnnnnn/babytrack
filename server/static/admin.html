@@ -456,6 +456,10 @@
   </div>
 
   <script>
+    /* exported logout, prevDay, nextDay, showCreateFamily, createFamily,
+       showCreateLink, createLink, deleteLink, editFamily, copyToClipboard,
+       copyLink */
+
     // Category colors for event highlighting
     const categoryColors = [
       "#acd9ff", "#c6fe01", "#fec29c", "#0efcbf", "#fcb7ff", 
@@ -529,7 +533,7 @@
         await api.post('/admin/login', { username, password });
         errorEl.style.display = 'none';
         showDashboard();
-      } catch (err) {
+      } catch (_err) {
         errorEl.textContent = 'Invalid username or password';
         errorEl.style.display = 'block';
       }
@@ -643,7 +647,7 @@
             </div>
           `).join('');
         }
-      } catch (err) {
+      } catch (_err) {
         document.getElementById('summary-totals').innerHTML = '';
         document.getElementById('summary-hours').innerHTML = '<p style="color: var(--danger);">Failed to load summary.</p>';
       }

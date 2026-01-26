@@ -1,6 +1,9 @@
+import html from "eslint-plugin-html";
+
 export default [
   {
-    files: ["server/static/*.js"],
+    files: ["server/static/*.js", "server/static/*.html"],
+    plugins: { html },
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: "script",
@@ -38,7 +41,7 @@ export default [
     },
     rules: {
       "no-undef": "error",
-      "no-unused-vars": ["warn", { args: "none", varsIgnorePattern: "^_" }],
+      "no-unused-vars": ["warn", { args: "none", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" }],
     },
   },
 ];

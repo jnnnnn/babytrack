@@ -1,3 +1,8 @@
+/* exported init, switchTab, changeReportDate, goToToday, saveWithCustomTime,
+   closeConfigModal, downloadCSV, downloadHourlyReport, importCSV, resetConfig,
+   saveConfig, clearAllEntries, toggleGroupStateful, toggleButtonFlag,
+   updateConfigButton, updateGroupCategory, addButtonToGroup, removeButton,
+   generateTestData */
 
 // Frontend error forwarding to backend
 function setupErrorForwarding() {
@@ -346,7 +351,7 @@ function hideTimePicker() {
 }
 
 // Helper to find last sleep start entry
-function findLastSleepStart(entries) {
+function _findLastSleepStart(entries) {
   return [...entries].reverse().find((e) => !e.deleted && e.type === 'sleep' && (e.value === 'sleeping' || e.value === 'nap'));
 }
 
@@ -517,7 +522,7 @@ async function importCSV() {
 
     const text = await file.text();
     const lines = text.trim().split('\n');
-    const header = lines[0];
+    const _header = lines[0];
 
     // Skip header row
     let imported = 0;
@@ -633,7 +638,7 @@ async function downloadHourlyReport() {
 
     // Track sleep periods for duration calculation
     let sleepStart = null;
-    let totalSleepMs = 0;
+    let _totalSleepMs = 0;
     const sleepByHour = {};
 
     // Sort entries by time
@@ -653,7 +658,7 @@ async function downloadHourlyReport() {
         } else if (e.value === 'awake' && sleepStart) {
           // Calculate sleep duration
           const duration = date - sleepStart;
-          totalSleepMs += duration;
+          _totalSleepMs += duration;
 
           // Distribute sleep across hours
           let current = new Date(sleepStart);
@@ -768,7 +773,7 @@ async function updateButtonStates() {
   buttonGroups.forEach((group) => {
     const categoryEntries = activeEntries.filter((e) => e.type === group.category);
     const lastEntry = [...categoryEntries].pop();
-    const elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
+    const _elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
 
     if (group.stateful) {
       group.buttons.forEach((btn) => {
@@ -1482,7 +1487,7 @@ function updateHourlyGrid(entries) {
 
 function updateSleepAttempts(entries) {
   const sleepEvents = entries.filter((e) => e.type === 'sleep');
-  const sootheEvents = entries.filter((e) => e.type === 'soothe' || e.type === '5s');
+  const _sootheEvents = entries.filter((e) => e.type === 'soothe' || e.type === '5s');
 
   const attempts = [];
   let currentAttempt = null;
