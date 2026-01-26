@@ -23,3 +23,11 @@ fly deploy --ha=false
 echo ""
 echo "✓ Deployed"
 echo "View logs: fly logs -a jonobabytrack"
+
+# smoke test prod
+echo "=== Smoke test production ==="
+sleep 5
+if ! curl -fsS http://jonobabytrack.fly.dev/health >/dev/null; then
+  echo "✗ Smoke test failed"
+  exit 1
+fi
