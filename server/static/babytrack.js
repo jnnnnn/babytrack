@@ -1030,7 +1030,7 @@ function closeConfigModal() {
 
 function saveConfig() {
   localStorage.setItem('babytrack-buttons', JSON.stringify(buttonGroups));
-  updateConfigTimestamp(); // Track when config was last modified
+  localStorage.setItem('babytrack-config-updated', Date.now().toString());
   rebuildEmojiMap();
   renderButtons();
   document.getElementById('config-modal').classList.remove('show');
