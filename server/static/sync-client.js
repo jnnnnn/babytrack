@@ -172,6 +172,18 @@ class SyncClient {
   handleEntry(msg) {
     const entry = msg.entry;
     
+    // For delete actions, server sends id at message level, not in entry
+    if (msg.action === 'delete') {
+      // Update cursor from message seq
+      if (msg.seq > this.cursor) {
+        this.cursor = msg.seq;
+        this.saveCursor();
+      }
+      // Pass an object with the id to the handler
+      this.onEntry(msg.action, { id: msg.id });
+      return;
+    }
+    
     // Track seq from received entry
     if (entry && entry.seq > this.cursor) {
       this.cursor = entry.seq;
@@ -255,11 +267,21 @@ class SyncClient {
   
   // Send entry to server
   sendEntry(action, entry) {
-    const msg = {
-      type: 'entry',
-      action: action,
-      entry: entry
-    };
+    let msg;
+    if (action === 'delete') {
+      // Delete uses id at message level, not in entry
+      msg = {
+        type: 'entry',
+        action: action,
+        id: entry.id
+      };
+    } else {
+      msg = {
+        type: 'entry',
+        action: action,
+        entry: entry
+      };
+    }
     
     if (this.connected && this.ws) {
       this.ws.send(JSON.stringify(msg));

@@ -112,6 +112,20 @@ test.describe('Client Workflow', () => {
 
     // Summary should show the nappy event (wet = nappy type)
     await expect(adminPage.locator('#summary-totals')).toContainText('nappy');
+
+    // Test delete sync: Client 1 deletes an entry, Client 2 should see it disappear
+    const sootheEvent1 = page1.locator('.event-entry:has(.event-value:has-text("pram"))').first();
+    const sootheEvent2 = page2.locator('.event-entry:has(.event-value:has-text("pram"))').first();
+    await expect(sootheEvent1).toBeVisible();
+    await expect(sootheEvent2).toBeVisible();
+
+    // Client 1 deletes the pram event by double-clicking
+    await sootheEvent1.dblclick();
+
+    // By default "Hide deleted" is checked, so deleted entries disappear
+    await expect(sootheEvent1).toBeHidden();
+    // Client 2 should also see it disappear via WebSocket sync
+    await expect(sootheEvent2).toBeHidden();
   });
 
   test('second client offline and syncs on reconnect', async ({ browser }) => {
