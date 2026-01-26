@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Admin UI', () => {
-  test('rejects invalid credentials', async ({ page }) => {
+  test('admin workflow: login, family CRUD, links, logout', async ({ page }) => {
     await page.goto('/admin');
     await expect(page.locator('#login-view')).toBeVisible();
 
@@ -11,12 +11,7 @@ test.describe('Admin UI', () => {
 
     await expect(page.locator('#login-error')).toBeVisible();
     await expect(page.locator('#login-error')).toContainText('Invalid');
-  });
 
-  test('admin workflow: login, family CRUD, links, logout', async ({ page }) => {
-    // Login
-    await page.goto('/admin');
-    await expect(page.locator('#login-view')).toBeVisible();
     await page.fill('#login-username', 'admin');
     await page.fill('#login-password', 'testpass123');
     await page.click('button[type="submit"]');

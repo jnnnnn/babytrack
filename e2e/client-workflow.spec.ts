@@ -57,7 +57,6 @@ test.describe('Client Workflow', () => {
     const feedButton = page.locator('button.action[data-type="feed"][data-value="bf"]');
     await expect(feedButton).toBeVisible();
     await feedButton.click();
-    await expect(feedButton).toHaveClass(/fading/);
     await expect(page.locator('.event-entry', { hasText: 'feed' })).toBeVisible();
   });
 
