@@ -273,9 +273,10 @@ type EntrySummary struct {
 }
 
 type DailySummary struct {
-	Date   string          `json:"date"`
-	Hours  []HourlySummary `json:"hours"`
-	Totals map[string]int  `json:"totals"`
+	Date       string          `json:"date"`
+	Hours      []HourlySummary `json:"hours"`
+	Totals     map[string]int  `json:"totals"`
+	TotalSleep string          `json:"total_sleep"`
 }
 
 func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
@@ -319,6 +320,9 @@ func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Calculate total sleep time
+	totalSleepMins := calculateSleepMinutes(s.db, familyID, entries, startTime, endTime)
+
 	// Group by hour
 	hourlyMap := make(map[int][]EntrySummary)
 	totals := make(map[string]int)
@@ -349,10 +353,89 @@ func (s *Server) getFamilySummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	summary := DailySummary{
-		Date:   startTime.Format("2006-01-02"),
-		Hours:  hours,
-		Totals: totals,
+		Date:       startTime.Format("2006-01-02"),
+		Hours:      hours,
+		Totals:     totals,
+		TotalSleep: formatDuration(totalSleepMins),
 	}
 
 	jsonOK(w, summary)
+}
+
+// calculateSleepMinutes calculates total sleep minutes for a day, handling cross-day sleep
+func calculateSleepMinutes(db *DB, familyID string, entries []Entry, dayStart, dayEnd time.Time) int {
+	// Filter sleep events
+	var sleepEvents []Entry
+	for _, e := range entries {
+		if e.Type == "sleep" {
+			sleepEvents = append(sleepEvents, e)
+		}
+	}
+
+	totalMins := 0
+	var currentSleepStart *time.Time
+
+	// Check if day starts during a sleep period
+	lastSleepBefore, err := db.GetLastSleepEventBefore(familyID, dayStart.UnixMilli())
+	if err == nil && lastSleepBefore != nil {
+		if lastSleepBefore.Value == "sleeping" || lastSleepBefore.Value == "nap" {
+			t := time.UnixMilli(lastSleepBefore.Ts)
+			currentSleepStart = &t
+		}
+	}
+
+	for _, e := range sleepEvents {
+		eventTime := time.UnixMilli(e.Ts)
+		if e.Value == "sleeping" || e.Value == "nap" {
+			currentSleepStart = &eventTime
+		} else if e.Value == "awake" && currentSleepStart != nil {
+			// Clip sleep period to day boundaries
+			clippedStart := *currentSleepStart
+			if clippedStart.Before(dayStart) {
+				clippedStart = dayStart
+			}
+			clippedEnd := eventTime
+			if clippedEnd.After(dayEnd) {
+				clippedEnd = dayEnd
+			}
+
+			if clippedEnd.After(clippedStart) {
+				totalMins += int(clippedEnd.Sub(clippedStart).Minutes())
+			}
+			currentSleepStart = nil
+		}
+	}
+
+	// Handle ongoing sleep (extends to end of day for past days, or current time for today)
+	if currentSleepStart != nil {
+		now := time.Now()
+		isToday := dayStart.Year() == now.Year() && dayStart.YearDay() == now.YearDay()
+
+		clippedStart := *currentSleepStart
+		if clippedStart.Before(dayStart) {
+			clippedStart = dayStart
+		}
+
+		var clippedEnd time.Time
+		if isToday {
+			clippedEnd = now
+			if clippedEnd.After(dayEnd) {
+				clippedEnd = dayEnd
+			}
+		} else {
+			clippedEnd = dayEnd
+		}
+
+		if clippedEnd.After(clippedStart) {
+			totalMins += int(clippedEnd.Sub(clippedStart).Minutes())
+		}
+	}
+
+	return totalMins
+}
+
+func formatDuration(mins int) string {
+	hours := mins / 60
+	minutes := mins % 60
+	return strconv.Itoa(hours) + "h " + strconv.Itoa(minutes) + "m"
 }

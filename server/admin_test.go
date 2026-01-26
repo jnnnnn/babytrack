@@ -341,3 +341,53 @@ func TestSummaryInvalidOffset(t *testing.T) {
 		t.Errorf("expected 400 for invalid offset, got %d", w.Code)
 	}
 }
+
+func TestSummaryTotalSleep(t *testing.T) {
+	s, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	family, _ := s.db.CreateFamily("Test Baby", "")
+	token, _ := s.db.CreateAdminSession("admin", 24*3600*1000)
+	cookie := &http.Cookie{Name: "admin_session", Value: token}
+
+	// Create sleep events: sleeping at 22:00, awake at 06:00 (8 hours)
+	baseDate, _ := time.Parse("2006-01-02", "2026-01-25")
+	sleepStart := baseDate.Add(-2 * time.Hour) // 22:00 on 2026-01-24
+	awakeTime := baseDate.Add(6 * time.Hour)   // 06:00 on 2026-01-25
+
+	s.db.UpsertEntry(&Entry{
+		ID:        "sleep-start",
+		FamilyID:  family.ID,
+		Ts:        sleepStart.UnixMilli(),
+		Type:      "sleep",
+		Value:     "sleeping",
+		UpdatedAt: sleepStart.UnixMilli(),
+	})
+	s.db.UpsertEntry(&Entry{
+		ID:        "awake",
+		FamilyID:  family.ID,
+		Ts:        awakeTime.UnixMilli(),
+		Type:      "sleep",
+		Value:     "awake",
+		UpdatedAt: awakeTime.UnixMilli(),
+	})
+
+	// Query for 2026-01-25 - should get 6 hours (midnight to 06:00)
+	req := httptest.NewRequest("GET", "/admin/families/"+family.ID+"/summary?date=2026-01-25&offset=0", nil)
+	req.SetPathValue("id", family.ID)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+
+	s.adminRequired(s.getFamilySummary)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var summary DailySummary
+	json.Unmarshal(w.Body.Bytes(), &summary)
+
+	if summary.TotalSleep != "6h 0m" {
+		t.Errorf("expected '6h 0m' total sleep (midnight to 06:00), got '%s'", summary.TotalSleep)
+	}
+}

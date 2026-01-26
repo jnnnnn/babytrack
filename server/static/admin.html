@@ -598,11 +598,15 @@
       try {
         const summary = await api.get(`/admin/families/${currentFamily.id}/summary?date=${dateStr}&offset=${offset}`);
         
-        // Totals
+        // Totals (include sleep time)
         const totals = summary.totals || {};
-        document.getElementById('summary-totals').innerHTML = Object.entries(totals)
+        let totalsHtml = Object.entries(totals)
           .map(([type, count]) => `<div class="total-item">${type}:<strong>${count}</strong></div>`)
-          .join('') || '<span style="color: var(--text-muted);">No events</span>';
+          .join('');
+        if (summary.total_sleep) {
+          totalsHtml = `<div class="total-item">Total Sleep:<strong>${summary.total_sleep}</strong></div>` + totalsHtml;
+        }
+        document.getElementById('summary-totals').innerHTML = totalsHtml || '<span style="color: var(--text-muted);">No events</span>';
         
         // Hours
         const hours = summary.hours || [];

@@ -1364,7 +1364,7 @@ function calculateDailyStats(entries) {
 
   return {
     totalSleep: `${hours}h ${minutes}m`,
-    counts: {}, // Dynamic counts removed
+    counts,
   };
 }
 
@@ -1377,6 +1377,16 @@ function updateStatsDisplay(stats) {
       label: 'Total Sleep',
     },
   ];
+
+  // Add counter stats from countDaily config
+  Object.entries(stats.counts || {}).forEach(([key, info]) => {
+    statData.push({
+      id: `stat-${key}`,
+      value: info.count,
+      label: info.label,
+      isNumeric: true,
+    });
+  });
 
   // Ensure stats grid has correct elements
   const statsGrid = document.querySelector('.stats-grid');

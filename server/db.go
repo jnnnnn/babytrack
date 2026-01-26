@@ -538,6 +538,22 @@ func (db *DB) GetEntriesForDate(familyID string, startMs, endMs int64) ([]Entry,
 	return entries, rows.Err()
 }
 
+// GetLastSleepEventBefore returns the most recent sleep event before a timestamp
+func (db *DB) GetLastSleepEventBefore(familyID string, beforeMs int64) (*Entry, error) {
+	var e Entry
+	err := db.QueryRow(
+		`SELECT id, family_id, ts, type, value, deleted, updated_at, seq 
+		 FROM entries 
+		 WHERE family_id = ? AND ts < ? AND type = 'sleep' AND deleted = 0
+		 ORDER BY ts DESC LIMIT 1`,
+		familyID, beforeMs,
+	).Scan(&e.ID, &e.FamilyID, &e.Ts, &e.Type, &e.Value, &e.Deleted, &e.UpdatedAt, &e.Seq)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 // GetLatestActivity returns the most recent entry timestamp for a family
 func (db *DB) GetLatestActivity(familyID string) (int64, error) {
 	var ts sql.NullInt64
