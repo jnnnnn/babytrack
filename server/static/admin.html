@@ -390,6 +390,12 @@
           <button class="btn btn-outline" onclick="logout()">Logout</button>
         </div>
       </header>
+      <div style="margin-bottom: 12px;">
+        <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px;">
+          <input type="checkbox" id="show-archived-toggle" onchange="toggleShowArchived()" />
+          Show archived families
+        </label>
+      </div>
       <div class="card" style="padding: 0; overflow: hidden;">
         <div id="families-list"></div>
       </div>
@@ -496,7 +502,7 @@
   <script>
     /* exported logout, prevDay, nextDay, showCreateFamily, createFamily,
        showCreateLink, createLink, deleteLink, showEditFamily, saveFamily,
-       toggleArchive, copyToClipboard, copyLink */
+       toggleArchive, toggleShowArchived, copyToClipboard, copyLink */
 
     // Category colors for event highlighting
     const categoryColors = [
@@ -519,6 +525,7 @@
     let currentFamily = null;
     let summaryDate = new Date();
     summaryDate.setHours(0, 0, 0, 0);
+    let showArchived = false;
 
     // API helpers
     const api = {
@@ -585,18 +592,20 @@
     // Dashboard
     async function showDashboard() {
       showView('dashboard-view');
-      const families = await api.get('/admin/families');
+      document.getElementById('show-archived-toggle').checked = showArchived;
+      const url = showArchived ? '/admin/families?archived=true' : '/admin/families';
+      const families = await api.get(url);
       const list = document.getElementById('families-list');
       
       if (!families || families.length === 0) {
-        list.innerHTML = '<div class="empty-state">No families yet. Create one to get started.</div>';
+        list.innerHTML = `<div class="empty-state">${showArchived ? 'No archived families.' : 'No families yet. Create one to get started.'}</div>`;
         return;
       }
       
       list.innerHTML = families.map(f => `
         <div class="family-item" onclick="showFamily('${f.id}')">
           <div class="family-info">
-            <h3>${escapeHtml(f.name)}</h3>
+            <h3>${escapeHtml(f.name)}${f.archived ? ' <span class="badge badge-archived">Archived</span>' : ''}</h3>
             <p>${f.notes ? escapeHtml(f.notes) : 'No notes'}</p>
           </div>
           <div class="family-stats">
@@ -606,6 +615,11 @@
           </div>
         </div>
       `).join('');
+    }
+
+    function toggleShowArchived() {
+      showArchived = document.getElementById('show-archived-toggle').checked;
+      showDashboard();
     }
 
     // Family detail

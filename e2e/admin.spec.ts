@@ -68,7 +68,18 @@ test.describe('Admin UI', () => {
     await expect(page.locator('#detail-archived-badge')).toBeVisible();
     await expect(page.locator('#archive-btn')).toContainText('Unarchive');
 
-    // Unarchive family
+    // Verify archived family disappears from main list but appears when toggle is checked
+    await page.click('text=← Back to Families');
+    await expect(page.locator('#dashboard-view')).toBeVisible();
+    await expect(page.locator('.family-item', { hasText: familyName })).not.toBeVisible();
+    
+    // Toggle to show archived
+    await page.check('#show-archived-toggle');
+    await expect(page.locator('.family-item', { hasText: familyName })).toBeVisible();
+    await expect(page.locator('.family-item', { hasText: familyName }).locator('.badge-archived')).toBeVisible();
+    
+    // Unarchive from detail view
+    await page.locator('.family-item', { hasText: familyName }).click();
     await page.click('button:text("Unarchive")');
     await expect(page.locator('#detail-archived-badge')).not.toBeVisible();
     await expect(page.locator('#archive-btn')).toContainText('Archive');
