@@ -201,8 +201,8 @@ async function addEntry(type, value, ts) {
     request.onsuccess = () => {
       entry.id = request.result; // Set the auto-generated ID
 
-      // Sync to server if connected
-      if (window.syncClient && window.syncClient.isConnected()) {
+      // Sync to server (queues if offline)
+      if (window.syncClient) {
         window.syncClient.sendEntry('add', {
           id: entry.syncId,
           ts: new Date(ts).getTime(),
@@ -405,8 +405,8 @@ async function toggleEntryDeleted(entryId, shouldDelete) {
         entry.updated = new Date().toISOString();
         const updateRequest = objectStore.put(entry);
         updateRequest.onsuccess = () => {
-          // Sync to server if connected
-          if (window.syncClient && window.syncClient.isConnected() && entry.syncId) {
+          // Sync to server (queues if offline)
+          if (window.syncClient && entry.syncId) {
             if (shouldDelete) {
               window.syncClient.sendEntry('delete', { id: entry.syncId });
             } else {
