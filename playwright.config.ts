@@ -8,7 +8,7 @@ export default defineConfig({
   retries: 0,
   workers: 1, // Run serially to avoid race conditions with shared server state
   use: {
-    baseURL: 'http://localhost:8080',
+    baseURL: 'http://localhost:8081',
     headless: !isHuman,
     screenshot: 'only-on-failure',
     launchOptions: {
@@ -22,11 +22,11 @@ export default defineConfig({
   ],
   webServer: {
     command: 'cd server && go build -o babytrackd && ./babytrackd',
-    url: 'http://localhost:8080/health',
+    url: 'http://localhost:8081/health',
     timeout: 15000,
     reuseExistingServer: !process.env.CI,
     env: {
-      PORT: '8080',
+      PORT: '8081',
       ADMIN_USER: 'admin',
       ADMIN_PASS: 'testpass123',
     },
