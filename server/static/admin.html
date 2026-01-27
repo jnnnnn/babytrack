@@ -89,6 +89,25 @@
       color: var(--text);
     }
 
+    .btn-warning {
+      background: #ff9800;
+      color: white;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .badge-archived {
+      background: #9e9e9e;
+      color: white;
+    }
+
     input, textarea {
       width: 100%;
       padding: 12px;
@@ -386,9 +405,13 @@
         <div class="detail-header">
           <div>
             <h2 id="detail-name"></h2>
+            <span id="detail-archived-badge" class="badge badge-archived" style="display: none;">Archived</span>
             <p id="detail-notes"></p>
           </div>
-          <button class="btn btn-outline btn-small" onclick="editFamily()">Edit</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline btn-small" onclick="showEditFamily()">Edit</button>
+            <button id="archive-btn" class="btn btn-warning btn-small" onclick="toggleArchive()">Archive</button>
+          </div>
         </div>
 
         <div class="section-title">Access Links</div>
@@ -455,10 +478,25 @@
     </div>
   </div>
 
+  <!-- Edit Family Modal -->
+  <div id="edit-family-modal" class="modal-backdrop">
+    <div class="modal">
+      <h2>Edit Family</h2>
+      <label>Name</label>
+      <input type="text" id="edit-family-name" placeholder="Family name" />
+      <label>Notes</label>
+      <textarea id="edit-family-notes" rows="3" placeholder="Any relevant notes..."></textarea>
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveFamily()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     /* exported logout, prevDay, nextDay, showCreateFamily, createFamily,
-       showCreateLink, createLink, deleteLink, editFamily, copyToClipboard,
-       copyLink */
+       showCreateLink, createLink, deleteLink, showEditFamily, saveFamily,
+       toggleArchive, copyToClipboard, copyLink */
 
     // Category colors for event highlighting
     const categoryColors = [
@@ -577,6 +615,21 @@
       
       document.getElementById('detail-name').textContent = currentFamily.name;
       document.getElementById('detail-notes').textContent = currentFamily.notes || 'No notes';
+      
+      // Update archived state
+      const badge = document.getElementById('detail-archived-badge');
+      const archiveBtn = document.getElementById('archive-btn');
+      if (currentFamily.archived) {
+        badge.style.display = 'inline-block';
+        archiveBtn.textContent = 'Unarchive';
+        archiveBtn.classList.remove('btn-warning');
+        archiveBtn.classList.add('btn-primary');
+      } else {
+        badge.style.display = 'none';
+        archiveBtn.textContent = 'Archive';
+        archiveBtn.classList.add('btn-warning');
+        archiveBtn.classList.remove('btn-primary');
+      }
       
       await loadLinks();
       await loadSummary();
@@ -720,12 +773,33 @@
       loadLinks();
     }
 
-    function editFamily() {
-      const newName = prompt('Family name:', currentFamily.name);
-      if (newName && newName !== currentFamily.name) {
-        api.patch(`/admin/families/${currentFamily.id}`, { name: newName })
-          .then(() => showFamily(currentFamily.id));
+    function showEditFamily() {
+      document.getElementById('edit-family-name').value = currentFamily.name;
+      document.getElementById('edit-family-notes').value = currentFamily.notes || '';
+      document.getElementById('edit-family-modal').classList.add('active');
+    }
+
+    async function saveFamily() {
+      const name = document.getElementById('edit-family-name').value.trim();
+      const notes = document.getElementById('edit-family-notes').value.trim();
+      
+      if (!name) {
+        alert('Name is required');
+        return;
       }
+      
+      await api.patch(`/admin/families/${currentFamily.id}`, { name, notes });
+      closeModal();
+      showFamily(currentFamily.id);
+    }
+
+    async function toggleArchive() {
+      const newArchived = !currentFamily.archived;
+      const action = newArchived ? 'archive' : 'unarchive';
+      if (!confirm(`Are you sure you want to ${action} this family?`)) return;
+      
+      await api.patch(`/admin/families/${currentFamily.id}`, { archived: newArchived });
+      showFamily(currentFamily.id);
     }
 
     // Helpers

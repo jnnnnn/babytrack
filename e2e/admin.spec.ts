@@ -52,6 +52,27 @@ test.describe('Admin UI', () => {
     const restoredDate = await page.locator('#summary-date').textContent();
     expect(restoredDate).toBe(initialDate);
 
+    // Edit family - update notes
+    await page.click('button:text("Edit")');
+    await expect(page.locator('#edit-family-modal')).toBeVisible();
+    await expect(page.locator('#edit-family-name')).toHaveValue(familyName);
+    const updatedNotes = 'Updated E2E notes';
+    await page.fill('#edit-family-notes', updatedNotes);
+    await page.click('#edit-family-modal button:text("Save")');
+    await expect(page.locator('#edit-family-modal')).not.toBeVisible();
+    await expect(page.locator('#detail-notes')).toContainText(updatedNotes);
+
+    // Archive family
+    page.on('dialog', dialog => dialog.accept());
+    await page.click('button:text("Archive")');
+    await expect(page.locator('#detail-archived-badge')).toBeVisible();
+    await expect(page.locator('#archive-btn')).toContainText('Unarchive');
+
+    // Unarchive family
+    await page.click('button:text("Unarchive")');
+    await expect(page.locator('#detail-archived-badge')).not.toBeVisible();
+    await expect(page.locator('#archive-btn')).toContainText('Archive');
+
     // Back to dashboard
     await page.click('text=← Back to Families');
     await expect(page.locator('#dashboard-view')).toBeVisible();
