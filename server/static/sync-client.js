@@ -2,7 +2,12 @@
  * BabyTrack WebSocket Sync Client
  * 
  * Replaces JSONBin.io sync with real-time WebSocket connection to babytrackd server.
- * Supports offline queueing and automatic reconnection.
+ * 
+ * Reliability guarantees:
+ * - Entries are added to pendingQueue before send attempt
+ * - Entries remain in pendingQueue until server acks them
+ * - On reconnect, all pending entries are resent
+ * - pendingQueue is persisted to localStorage
  */
 
 class SyncClient {
@@ -15,9 +20,14 @@ class SyncClient {
     this.maxReconnectAttempts = 10;
     this.reconnectDelay = 1000;
     
-    // Offline queue for entries created while disconnected
-    this.offlineQueue = [];
-    this.loadOfflineQueue();
+    // Pending queue: entries awaiting server ack
+    // Map of id -> {msg, addedAt}
+    this.pendingEntries = new Map();
+    this.loadPendingQueue();
+    
+    // Pending config (only one config at a time)
+    this.pendingConfig = null;
+    this.loadPendingConfig();
     
     // Callbacks
     this.onConnect = options.onConnect || (() => {});
@@ -114,6 +124,20 @@ class SyncClient {
     setTimeout(() => this.connect(), delay);
   }
   
+  // Safe send that catches errors
+  safeSend(msg) {
+    if (!this.connected || !this.ws) {
+      return false;
+    }
+    try {
+      this.ws.send(JSON.stringify(msg));
+      return true;
+    } catch (err) {
+      console.error('[Sync] Send failed:', err);
+      return false;
+    }
+  }
+  
   handleMessage(data) {
     try {
       const msg = JSON.parse(data);
@@ -129,9 +153,8 @@ class SyncClient {
           this.handleEntryAck(msg);
           break;
         case 'config':
-          // Process the new configuration structure
+          this.handleConfigAck();
           this.onConfig(msg.data);
-          console.log('Received config:', msg.data);
           break;
         case 'presence':
           this.onPresence(msg.members || []);
@@ -162,11 +185,17 @@ class SyncClient {
         if (entry.seq > this.cursor) {
           this.cursor = entry.seq;
         }
+        // Remove from pending if server already has it
+        this.pendingEntries.delete(entry.id);
       }
       this.saveCursor();
+      this.savePendingQueue();
     }
     
     this.onInit(msg.entries || [], msg.config || {});
+    
+    // After init, flush any pending entries
+    this.flushPendingQueue();
   }
   
   handleEntry(msg) {
@@ -197,14 +226,27 @@ class SyncClient {
     // Entry was persisted by server, remove from pending queue
     console.log('[Sync] Entry ack:', msg.id, 'seq:', msg.seq);
     
+    // Remove from pending - this is the key reliability mechanism
+    if (this.pendingEntries.has(msg.id)) {
+      this.pendingEntries.delete(msg.id);
+      this.savePendingQueue();
+      console.log('[Sync] Removed from pending, remaining:', this.pendingEntries.size);
+    }
+    
     // Update cursor if this seq is higher
     if (msg.seq > this.cursor) {
       this.cursor = msg.seq;
       this.saveCursor();
     }
-    
-    // Could notify UI that entry was confirmed
-    // For now, just log it
+  }
+  
+  handleConfigAck() {
+    // Config was persisted, clear pending
+    if (this.pendingConfig) {
+      this.pendingConfig = null;
+      this.savePendingConfig();
+      console.log('[Sync] Config ack received');
+    }
   }
   
   handleSync(msg) {
@@ -217,8 +259,11 @@ class SyncClient {
         if (entry.seq > this.cursor) {
           this.cursor = entry.seq;
         }
+        // Remove from pending if server has it
+        this.pendingEntries.delete(entry.id);
       }
       this.saveCursor();
+      this.savePendingQueue();
     }
   }
   
@@ -231,6 +276,8 @@ class SyncClient {
         // Use appropriate action based on deleted flag
         const action = entry.deleted ? 'delete' : 'add';
         this.onEntry(action, entry);
+        // Remove from pending if server already has it
+        this.pendingEntries.delete(entry.id);
       }
     }
     
@@ -239,14 +286,15 @@ class SyncClient {
       this.cursor = msg.cursor;
       this.saveCursor();
     }
+    this.savePendingQueue();
     
     // If more data available, request next page
     if (msg.has_more) {
       this.sendSyncRequest();
     } else {
-      // Sync complete, now flush offline queue
-      console.log('[Sync] Initial sync complete, flushing offline queue');
-      this.flushOfflineQueue();
+      // Sync complete, now flush pending queue
+      console.log('[Sync] Initial sync complete, flushing pending queue');
+      this.flushPendingQueue();
     }
   }
   
@@ -254,26 +302,39 @@ class SyncClient {
     if (!this.connected || !this.ws) return;
     
     console.log('[Sync] Sending sync_request with cursor:', this.cursor);
-    this.ws.send(JSON.stringify({
+    this.safeSend({
       type: 'sync_request',
       cursor: this.cursor,
       limit: 500
-    }));
+    });
   }
   
   saveCursor() {
     localStorage.setItem('sync-cursor', this.cursor.toString());
   }
   
-  // Send entry to server
+  // Get the entry ID from a message (handles both add/update and delete formats)
+  getEntryId(msg) {
+    if (msg.action === 'delete') {
+      return msg.id;
+    }
+    return msg.entry?.id;
+  }
+  
+  // Send entry to server - always queues first, then tries to send
   sendEntry(action, entry) {
+    const entryId = entry.id;
+    if (!entryId) {
+      console.error('[Sync] Entry missing id:', entry);
+      return;
+    }
+    
     let msg;
     if (action === 'delete') {
-      // Delete uses id at message level, not in entry
       msg = {
         type: 'entry',
         action: action,
-        id: entry.id
+        id: entryId
       };
     } else {
       msg = {
@@ -283,13 +344,18 @@ class SyncClient {
       };
     }
     
+    // Always add to pending queue first (reliability guarantee)
+    this.pendingEntries.set(entryId, {
+      msg: msg,
+      addedAt: Date.now()
+    });
+    this.savePendingQueue();
+    
+    // Try to send immediately if connected
     if (this.connected && this.ws) {
-      this.ws.send(JSON.stringify(msg));
+      this.safeSend(msg);
     } else {
-      // Queue for later
-      this.offlineQueue.push(msg);
-      this.saveOfflineQueue();
-      console.log('[Sync] Queued entry for later sync');
+      console.log('[Sync] Queued entry for later sync:', entryId);
     }
   }
   
@@ -311,25 +377,37 @@ class SyncClient {
     this.sendEntry('delete', { id });
   }
   
-  // Send config update
+  // Send config update - queues until acked
   sendConfig(config) {
-    if (this.connected && this.ws) {
-      // Validate the config structure before sending
-      const validatedConfig = config.map(group => ({
-        category: group.category,
-        stateful: group.stateful || false,
-        buttons: group.buttons.map(btn => ({
-          value: btn.value,
-          label: btn.label,
-          emoji: btn.emoji,
-          countDaily: btn.countDaily || false
-        }))
-      }));
+    // Validate the config structure before sending
+    const validatedConfig = config.map(group => ({
+      category: group.category,
+      stateful: group.stateful || false,
+      buttons: group.buttons.map(btn => ({
+        value: btn.value,
+        label: btn.label,
+        emoji: btn.emoji,
+        countDaily: btn.countDaily || false
+      }))
+    }));
 
-      this.ws.send(JSON.stringify({
-        type: 'config',
-        data: validatedConfig
-      }));
+    const msg = {
+      type: 'config',
+      data: validatedConfig
+    };
+    
+    // Queue the config
+    this.pendingConfig = {
+      msg: msg,
+      addedAt: Date.now()
+    };
+    this.savePendingConfig();
+    
+    // Try to send immediately if connected
+    if (this.connected && this.ws) {
+      this.safeSend(msg);
+    } else {
+      console.log('[Sync] Queued config for later sync');
     }
   }
   
@@ -344,40 +422,67 @@ class SyncClient {
     }
     
     // Legacy bulk sync for local entries
-    this.ws.send(JSON.stringify({
+    this.safeSend({
       type: 'sync',
       cursor: this.cursor,
       entries: localEntries
-    }));
+    });
   }
   
-  // Offline queue management
-  loadOfflineQueue() {
+  // Pending queue management
+  loadPendingQueue() {
     try {
-      const stored = localStorage.getItem('sync-offline-queue');
-      this.offlineQueue = stored ? JSON.parse(stored) : [];
-    } catch (_e) {
-      this.offlineQueue = [];
-    }
-  }
-  
-  saveOfflineQueue() {
-    localStorage.setItem('sync-offline-queue', JSON.stringify(this.offlineQueue));
-  }
-  
-  flushOfflineQueue() {
-    if (this.offlineQueue.length === 0) return;
-    
-    console.log('[Sync] Flushing', this.offlineQueue.length, 'queued messages');
-    
-    for (const msg of this.offlineQueue) {
-      if (this.ws && this.connected) {
-        this.ws.send(JSON.stringify(msg));
+      const stored = localStorage.getItem('sync-pending-queue');
+      if (stored) {
+        const arr = JSON.parse(stored);
+        this.pendingEntries = new Map(arr);
       }
+    } catch (_e) {
+      this.pendingEntries = new Map();
+    }
+  }
+  
+  savePendingQueue() {
+    const arr = Array.from(this.pendingEntries.entries());
+    localStorage.setItem('sync-pending-queue', JSON.stringify(arr));
+  }
+  
+  loadPendingConfig() {
+    try {
+      const stored = localStorage.getItem('sync-pending-config');
+      this.pendingConfig = stored ? JSON.parse(stored) : null;
+    } catch (_e) {
+      this.pendingConfig = null;
+    }
+  }
+  
+  savePendingConfig() {
+    if (this.pendingConfig) {
+      localStorage.setItem('sync-pending-config', JSON.stringify(this.pendingConfig));
+    } else {
+      localStorage.removeItem('sync-pending-config');
+    }
+  }
+  
+  flushPendingQueue() {
+    if (this.pendingEntries.size === 0 && !this.pendingConfig) return;
+    if (!this.connected || !this.ws) return;
+    
+    console.log('[Sync] Flushing', this.pendingEntries.size, 'pending entries');
+    
+    // Send all pending entries
+    for (const [id, pending] of this.pendingEntries) {
+      console.log('[Sync] Resending pending entry:', id);
+      this.safeSend(pending.msg);
     }
     
-    this.offlineQueue = [];
-    this.saveOfflineQueue();
+    // Send pending config if any
+    if (this.pendingConfig) {
+      console.log('[Sync] Resending pending config');
+      this.safeSend(this.pendingConfig.msg);
+    }
+    
+    // Note: we don't clear the queue here - entries are only removed on ack
   }
   
   // Generate a UUID for entries
@@ -397,7 +502,7 @@ class SyncClient {
   startHeartbeat() {
     this.heartbeatInterval = setInterval(() => {
       if (this.connected && this.ws) {
-        this.ws.send(JSON.stringify({ type: 'ping' }));
+        this.safeSend({ type: 'ping' });
       }
     }, 30000);
   }
@@ -418,6 +523,11 @@ class SyncClient {
     if (this.connected) return 'connected';
     if (this.connecting) return 'connecting';
     return 'disconnected';
+  }
+  
+  // Get pending count for UI/debugging
+  getPendingCount() {
+    return this.pendingEntries.size + (this.pendingConfig ? 1 : 0);
   }
 }
 
