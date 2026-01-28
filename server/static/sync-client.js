@@ -313,14 +313,6 @@ class SyncClient {
     localStorage.setItem('sync-cursor', this.cursor.toString());
   }
   
-  // Get the entry ID from a message (handles both add/update and delete formats)
-  getEntryId(msg) {
-    if (msg.action === 'delete') {
-      return msg.id;
-    }
-    return msg.entry?.id;
-  }
-  
   // Send entry to server - always queues first, then tries to send
   sendEntry(action, entry) {
     const entryId = entry.id;
@@ -359,24 +351,6 @@ class SyncClient {
     }
   }
   
-  // Convenience methods for entry operations
-  addEntry(entry) {
-    // Ensure entry has a UUID if not present
-    if (!entry.id) {
-      entry.id = this.generateUUID();
-    }
-    this.sendEntry('add', entry);
-    return entry.id;
-  }
-  
-  updateEntry(entry) {
-    this.sendEntry('update', entry);
-  }
-  
-  deleteEntry(id) {
-    this.sendEntry('delete', { id });
-  }
-  
   // Send config update - queues until acked
   sendConfig(config) {
     // Validate the config structure before sending
@@ -409,24 +383,6 @@ class SyncClient {
     } else {
       console.log('[Sync] Queued config for later sync');
     }
-  }
-  
-  // Request incremental sync (legacy API, use sendSyncRequest for cursor-based sync)
-  requestSync(localEntries = []) {
-    if (!this.connected || !this.ws) return;
-    
-    // If no local entries to sync, just use sendSyncRequest
-    if (localEntries.length === 0) {
-      this.sendSyncRequest();
-      return;
-    }
-    
-    // Legacy bulk sync for local entries
-    this.safeSend({
-      type: 'sync',
-      cursor: this.cursor,
-      entries: localEntries
-    });
   }
   
   // Pending queue management
@@ -483,34 +439,6 @@ class SyncClient {
     }
     
     // Note: we don't clear the queue here - entries are only removed on ack
-  }
-  
-  // Generate a UUID for entries
-  generateUUID() {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-      return crypto.randomUUID();
-    }
-    // Fallback for older browsers
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-  }
-  
-  // Start heartbeat
-  startHeartbeat() {
-    this.heartbeatInterval = setInterval(() => {
-      if (this.connected && this.ws) {
-        this.safeSend({ type: 'ping' });
-      }
-    }, 30000);
-  }
-  
-  stopHeartbeat() {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-    }
   }
   
   // Check if we have server connection
