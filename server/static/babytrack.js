@@ -114,7 +114,7 @@ function switchTab(tabName) {
 // Initialize IndexedDB
 async function initDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('BabyLogDB', 3);
+    const request = indexedDB.open('BabyLogDB', 4);
 
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
@@ -174,8 +174,57 @@ async function initDB() {
           }
         };
       }
+
+      if (oldVersion < 4) {
+        // Migration to version 4: Add syncId index for efficient lookups during sync
+        const transaction = event.target.transaction;
+        const objectStore = transaction.objectStore('entries');
+
+        if (!objectStore.indexNames.contains('syncId')) {
+          objectStore.createIndex('syncId', 'syncId', { unique: false });
+        }
+      }
     };
   });
+}
+
+// Helper to get entry by syncId using index (efficient O(1) lookup)
+async function getEntryBySyncId(syncId) {
+  if (!db) await initDB();
+  if (!syncId) return null;
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(['entries'], 'readonly');
+    const objectStore = transaction.objectStore('entries');
+    
+    const index = objectStore.index('syncId');
+    const request = index.get(syncId);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+    
+  });
+}
+
+// Debounced UI update - prevents rapid-fire updates during bulk sync
+let _uiUpdatePending = false;
+let _uiUpdateTimeout = null;
+
+function scheduleUIUpdate() {
+  if (_uiUpdatePending) return; // Already scheduled
+  _uiUpdatePending = true;
+  
+  // Clear any existing timeout
+  if (_uiUpdateTimeout) clearTimeout(_uiUpdateTimeout);
+  
+  // Schedule update with requestAnimationFrame + small debounce
+  _uiUpdateTimeout = setTimeout(() => {
+    _uiUpdatePending = false;
+    _uiUpdateTimeout = null;
+    window.requestAnimationFrame(() => {
+      updateDailyReport();
+      updateButtonStates();
+    });
+  }, 100); // 100ms debounce
 }
 
 // Add a single entry to the database
@@ -1089,12 +1138,12 @@ function initWebSocketSync() {
       if (config && Object.keys(config).length > 0) {
         // Could merge config here if needed
       }
-      updateDailyReport();
+      scheduleUIUpdate(); // Debounced UI refresh
     },
     onEntry: async (action, entry) => {
       console.log('[WS Sync] Received entry:', action, entry);
       await handleRemoteEntry(action, entry);
-      updateDailyReport();
+      scheduleUIUpdate(); // Debounced UI refresh
     },
     onPresence: (members) => {
       console.log('[WS Sync] Presence update:', members);
@@ -1125,21 +1174,25 @@ function updatePresenceIndicator(members) {
 }
 
 // Merge remote entries into local IndexedDB
+// Optimized to use syncId index instead of getAll() for each entry
 async function mergeRemoteEntries(remoteEntries) {
   if (!db) await initDB();
+  if (!remoteEntries || remoteEntries.length === 0) return;
 
+  // Process entries in a single transaction for efficiency
   const transaction = db.transaction(['entries'], 'readwrite');
   const objectStore = transaction.objectStore('entries');
+  const index = objectStore.index('syncId');
 
   for (const remote of remoteEntries) {
-    // Check if we already have this entry by syncId
-    const existingEntries = await new Promise((resolve, reject) => {
-      const request = objectStore.getAll();
-      request.onsuccess = () => resolve(request.result);
+    if (!remote.id) continue;
+
+    // Efficient lookup by syncId index
+    const existing = await new Promise((resolve, reject) => {
+      const request = index.get(remote.id);
+      request.onsuccess = () => resolve(request.result || null);
       request.onerror = () => reject(request.error);
     });
-
-    const existing = existingEntries.find(e => e.syncId === remote.id);
 
     if (existing) {
       // Update if remote is newer
@@ -1175,23 +1228,17 @@ async function mergeRemoteEntries(remoteEntries) {
 }
 
 // Handle a single remote entry update
+// Optimized to use syncId index instead of getAll()
 async function handleRemoteEntry(action, entry) {
   if (!entry) return;
 
   if (action === 'delete') {
-    // Find and mark as deleted
-    if (!db) await initDB();
-    const transaction = db.transaction(['entries'], 'readwrite');
-    const objectStore = transaction.objectStore('entries');
-
-    const allEntries = await new Promise((resolve, reject) => {
-      const request = objectStore.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-
-    const existing = allEntries.find(e => e.syncId === entry.id);
+    // Find and mark as deleted using efficient index lookup
+    const existing = await getEntryBySyncId(entry.id);
     if (existing && !existing.deleted) {
+      if (!db) await initDB();
+      const transaction = db.transaction(['entries'], 'readwrite');
+      const objectStore = transaction.objectStore('entries');
       existing.deleted = true;
       existing.updated = new Date().toISOString();
       objectStore.put(existing);
