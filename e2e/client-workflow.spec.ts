@@ -153,4 +153,131 @@ test.describe('Client Workflow', () => {
     // Client 2 should see the wet nappy event from client 1 via sync on reconnect
     await expect(page2.locator('.event-type:has-text("nappy")').first()).toBeVisible();
   });
+
+  test('CSV export and import between families', async ({ browser }) => {
+    // Create two families with separate access links
+    const adminContext = await browser.newContext();
+    const adminPage = await adminContext.newPage();
+
+    await adminPage.goto('/admin');
+    await adminPage.fill('#login-username', 'admin');
+    await adminPage.fill('#login-password', 'testpass123');
+    await adminPage.click('button[type="submit"]');
+    await expect(adminPage.locator('#dashboard-view')).toBeVisible();
+
+    // Create source family
+    const sourceFamily = `CSV Source ${Date.now()}`;
+    await adminPage.click('text=+ New Family');
+    await adminPage.fill('#family-name', sourceFamily);
+    await adminPage.click('button:text("Create")');
+    await adminPage.locator('.family-item', { hasText: sourceFamily }).click();
+    await expect(adminPage.locator('#detail-view')).toBeVisible();
+    await adminPage.click('text=+ Add Link');
+    await expect(adminPage.locator('#create-link-modal')).toBeVisible();
+    await adminPage.fill('#link-label', 'Source Client');
+    await adminPage.locator('#create-link-modal button:text("Create")').click();
+    await expect(adminPage.locator('#link-created-modal')).toBeVisible();
+    const sourceLinkUrl = await adminPage.locator('#created-link-url').inputValue();
+    expect(sourceLinkUrl).toContain('/t/');
+    await adminPage.click('button:text("Close")');
+    await adminPage.click('text=← Back to Families');
+
+    // Create destination family
+    const destFamily = `CSV Dest ${Date.now()}`;
+    await adminPage.click('text=+ New Family');
+    await adminPage.fill('#family-name', destFamily);
+    await adminPage.click('button:text("Create")');
+    await adminPage.locator('.family-item', { hasText: destFamily }).click();
+    await expect(adminPage.locator('#detail-view')).toBeVisible();
+    await adminPage.click('text=+ Add Link');
+    await expect(adminPage.locator('#create-link-modal')).toBeVisible();
+    await adminPage.fill('#link-label', 'Dest Client');
+    await adminPage.locator('#create-link-modal button:text("Create")').click();
+    await expect(adminPage.locator('#link-created-modal')).toBeVisible();
+    const destLinkUrl = await adminPage.locator('#created-link-url').inputValue();
+    expect(destLinkUrl).toContain('/t/');
+    await adminPage.click('button:text("Close")');
+    await adminContext.close();
+
+    // Add events to source family
+    const sourceContext = await browser.newContext();
+    const sourcePage = await sourceContext.newPage();
+    const sourceTokenPath = new URL(sourceLinkUrl).pathname;
+    await sourcePage.goto(sourceTokenPath);
+    await expect(sourcePage).toHaveURL(/\?family=/);
+    await expect(sourcePage.locator('.container')).toBeVisible();
+
+    // Log some distinctive events
+    await sourcePage.locator('button.action[data-type="feed"][data-value="bf"]').click();
+    await expect(sourcePage.locator('.event-entry', { hasText: 'feed' })).toBeVisible();
+    await sourcePage.locator('button.action[data-type="nappy"][data-value="dirty"]').click();
+    await expect(sourcePage.locator('.event-entry', { hasText: 'nappy' })).toBeVisible();
+
+    // The Event Log tab with CSV export is already visible (it's the default tab)
+    await expect(sourcePage.locator('#log-tab')).toBeVisible();
+
+    // Intercept the download
+    const [download] = await Promise.all([
+      sourcePage.waitForEvent('download'),
+      sourcePage.click('#download'),
+    ]);
+
+    const csvContent = await download.createReadStream().then(async (stream) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk as Buffer);
+      }
+      return Buffer.concat(chunks).toString('utf-8');
+    });
+
+    expect(csvContent).toContain('Timestamp,Type,Value');
+    expect(csvContent).toContain('feed');
+    expect(csvContent).toContain('nappy');
+    
+    await sourceContext.close();
+
+    // Import into destination family
+    const destContext = await browser.newContext();
+    const destPage = await destContext.newPage();
+    const destTokenPath = new URL(destLinkUrl).pathname;
+    
+    await destPage.goto(destTokenPath);
+    await expect(destPage).toHaveURL(/\?family=/);
+    await expect(destPage.locator('.container')).toBeVisible();
+
+    // Initially no events
+    await expect(destPage.locator('.event-entry')).toHaveCount(0);
+
+    // The Event Log tab with Import button is visible by default
+    await expect(destPage.locator('#log-tab')).toBeVisible();
+
+    // Set up dialog handler BEFORE triggering import
+    const dialogPromise = destPage.waitForEvent('dialog');
+
+    // Create a file input and trigger import with the CSV content
+    const fileChooserPromise = destPage.waitForEvent('filechooser');
+    await destPage.click('button:has-text("Import")');
+    const fileChooser = await fileChooserPromise;
+    
+    // Write CSV to a temp buffer and upload
+    await fileChooser.setFiles({
+      name: 'import.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from(csvContent),
+    });
+
+    // Wait for import dialog and accept it
+    const dialog = await dialogPromise;
+    expect(dialog.message()).toContain('Imported');
+    await dialog.accept();
+
+    // Wait for UI to update after import
+    await destPage.waitForTimeout(500);
+
+    // Verify events appear in the event list
+    await expect(destPage.locator('.event-entry', { hasText: 'feed' })).toBeVisible();
+    await expect(destPage.locator('.event-entry', { hasText: 'nappy' })).toBeVisible();
+
+    await destContext.close();
+  });
 });

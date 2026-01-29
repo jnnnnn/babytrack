@@ -563,7 +563,7 @@ async function checkEntryExists(ts, type, value) {
   if (!db) await initDB();
   const transaction = db.transaction(['entries'], 'readonly');
   const objectStore = transaction.objectStore('entries');
-  const index = objectStore.index('ts');
+  const index = objectStore.index('timestamp');
   const request = index.getAll(IDBKeyRange.only(ts));
 
   const entries = await new Promise((resolve, reject) => {
