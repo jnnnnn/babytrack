@@ -252,7 +252,7 @@ func (s *Server) handleClientToken(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400 * 30, // 30 days
+		MaxAge:   2147483647, // effectively permanent (~68 years)
 	})
 
 	// Redirect to app with family context

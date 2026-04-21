@@ -9,19 +9,19 @@ primary_region = 'syd'
 [build]
 
 [env]
-  PORT = '8080'
+PORT = '8080'
 
 [[mounts]]
-  source = 'jonobabytrack_data'
-  destination = '/data'
+source = 'jonobabytrack_data'
+destination = '/data'
 
 [http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = 'stop'
-  auto_start_machines = true
-  min_machines_running = 0
+internal_port = 8080
+force_https = true
+auto_stop_machines = 'stop'
+auto_start_machines = true
+min_machines_running = 0
 
 [[vm]]
-  size = 'shared-cpu-1x'
-  memory = '256mb'
+size = 'shared-cpu-1x'
+memory = '256mb'
