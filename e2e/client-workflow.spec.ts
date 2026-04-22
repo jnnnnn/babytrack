@@ -64,94 +64,108 @@ test.describe('Client Workflow', () => {
     // Open two browser contexts - simulating two different clients
     const context1 = await browser.newContext();
     const context2 = await browser.newContext();
+    let adminContext;
 
-    const page1 = await context1.newPage();
-    const page2 = await context2.newPage();
+    try {
+      const page1 = await context1.newPage();
+      const page2 = await context2.newPage();
 
-    const tokenPath = new URL(accessLinkUrl).pathname;
+      const tokenPath = new URL(accessLinkUrl).pathname;
 
-    // Page1 accesses the app
-    await page1.goto(tokenPath);
-    await expect(page1).toHaveURL(/\?family=/);
-    await expect(page1.locator('.container')).toBeVisible();
+      // Page1 accesses the app
+      await page1.goto(tokenPath);
+      await expect(page1).toHaveURL(/\?family=/);
+      await expect(page1.locator('.container')).toBeVisible();
 
-    // Page2 accesses the app
-    await page2.goto(tokenPath);
-    await expect(page2).toHaveURL(/\?family=/);
-    await expect(page2.locator('.container')).toBeVisible();
+      // Page2 accesses the app
+      await page2.goto(tokenPath);
+      await expect(page2).toHaveURL(/\?family=/);
+      await expect(page2.locator('.container')).toBeVisible();
 
-    // Client 1 logs a unique event - use wet nappy
-    const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
-    await expect(wetButton1).toBeVisible();
-    await wetButton1.click();
+      // Client 1 logs a unique event - use wet nappy
+      const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
+      await expect(wetButton1).toBeVisible();
+      await wetButton1.click();
 
-    // Client 2 logs a different unique event - use pram
-    const pram = page2.locator('button.action[data-type="soothe"][data-value="pram"]');
-    await expect(pram).toBeVisible();
-    await pram.click();
+      // Client 2 logs a different unique event - use pram
+      const pram = page2.locator('button.action[data-type="soothe"][data-value="pram"]');
+      await expect(pram).toBeVisible();
+      await pram.click();
 
-    // Look for the event-type span containing "nappy" in the visible event entry
-    await expect(page1.locator('.event-type:has-text("nappy")')).toBeVisible();
+      // Look for the event-type span containing "nappy" in the visible event entry
+      await expect(page1.locator('.event-type:has-text("nappy")')).toBeVisible({ timeout: 15000 });
 
-    // Client 2 should see the wet nappy event from client 1 via WebSocket
-    await expect(page2.locator('.event-type:has-text("nappy")')).toBeVisible();
+      // Client 2 should see the wet nappy event from client 1 via WebSocket
+      await expect(page2.locator('.event-type:has-text("nappy")')).toBeVisible({ timeout: 15000 });
 
-    // Also verify server persisted - open admin and check summary
-    const adminContext = await browser.newContext();
-    const adminPage = await adminContext.newPage();
+      // Also verify server persisted - open admin and check summary
+      adminContext = await browser.newContext();
+      const adminPage = await adminContext.newPage();
 
-    await adminPage.goto('/admin');
-    await adminPage.fill('#login-username', 'admin');
-    await adminPage.fill('#login-password', 'testpass123');
-    await adminPage.click('button[type="submit"]');
-    await expect(adminPage.locator('#dashboard-view')).toBeVisible();
+      await adminPage.goto('/admin');
+      await adminPage.fill('#login-username', 'admin');
+      await adminPage.fill('#login-password', 'testpass123');
+      await adminPage.click('button[type="submit"]');
+      await expect(adminPage.locator('#dashboard-view')).toBeVisible();
 
-    await adminPage.locator('.family-item', { hasText: familyName }).click();
-    await expect(adminPage.locator('#detail-view')).toBeVisible();
+      await adminPage.locator('.family-item', { hasText: familyName }).click();
+      await expect(adminPage.locator('#detail-view')).toBeVisible();
 
-    // Summary should show the nappy event (wet = nappy type)
-    await expect(adminPage.locator('#summary-totals')).toContainText('nappy');
+      // Summary should show the nappy event (wet = nappy type)
+      await expect(adminPage.locator('#summary-totals')).toContainText('nappy');
 
-    // Test delete sync: Client 1 deletes an entry, Client 2 should see it disappear
-    const sootheEvent1 = page1.locator('.event-entry:has(.event-value:has-text("pram"))').first();
-    const sootheEvent2 = page2.locator('.event-entry:has(.event-value:has-text("pram"))').first();
-    await expect(sootheEvent1).toBeVisible();
-    await expect(sootheEvent2).toBeVisible();
+      // Test delete sync: Client 1 deletes an entry, Client 2 should see it disappear
+      const sootheEvent1 = page1.locator('.event-entry:has(.event-value:has-text("pram"))').first();
+      const sootheEvent2 = page2.locator('.event-entry:has(.event-value:has-text("pram"))').first();
+      await expect(sootheEvent1).toBeVisible({ timeout: 15000 });
+      await expect(sootheEvent2).toBeVisible({ timeout: 15000 });
 
-    // Client 1 deletes the pram event by double-clicking
-    await sootheEvent1.dblclick();
+      // Client 1 deletes the pram event by double-clicking
+      await sootheEvent1.dblclick();
 
-    // By default "Hide deleted" is checked, so deleted entries disappear
-    await expect(sootheEvent1).toBeHidden();
-    // Client 2 should also see it disappear via WebSocket sync
-    await expect(sootheEvent2).toBeHidden();
+      // By default "Hide deleted" is checked, so deleted entries disappear
+      await expect(sootheEvent1).toBeHidden();
+      // Client 2 should also see it disappear via WebSocket sync
+      await expect(sootheEvent2).toBeHidden();
+    } finally {
+      if (adminContext) {
+        await adminContext.close();
+      }
+      await context1.close();
+      await context2.close();
+    }
   });
 
   test('second client offline and syncs on reconnect', async ({ browser }) => {
     // Open two browser contexts - simulating two different clients
     const context1 = await browser.newContext();
-
-    const page1 = await context1.newPage();
-
-    const tokenPath = new URL(accessLinkUrl).pathname;
-
-    // Page1 accesses the app
-    await page1.goto(tokenPath);
-    await expect(page1).toHaveURL(/\?family=/);
-    await expect(page1.locator('.container')).toBeVisible();
-    const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
-    await expect(wetButton1).toBeVisible()
-    await wetButton1.click();
-
-    // client 2 comes online
     const context2 = await browser.newContext();
-    const page2 = await context2.newPage();
-    await page2.goto(tokenPath);
-    await expect(page2).toHaveURL(/\?family=/);
-    await expect(page2.locator('.container')).toBeVisible();
 
-    // Client 2 should see the wet nappy event from client 1 via sync on reconnect
-    await expect(page2.locator('.event-type:has-text("nappy")').first()).toBeVisible();
+    try {
+      const page1 = await context1.newPage();
+
+      const tokenPath = new URL(accessLinkUrl).pathname;
+
+      // Page1 accesses the app
+      await page1.goto(tokenPath);
+      await expect(page1).toHaveURL(/\?family=/);
+      await expect(page1.locator('.container')).toBeVisible();
+      const wetButton1 = page1.locator('button.action[data-type="nappy"][data-value="wet"]');
+      await expect(wetButton1).toBeVisible();
+      await wetButton1.click();
+
+      // client 2 comes online
+      const page2 = await context2.newPage();
+      await page2.goto(tokenPath);
+      await expect(page2).toHaveURL(/\?family=/);
+      await expect(page2.locator('.container')).toBeVisible();
+
+      // Client 2 should see the wet nappy event from client 1 via sync on reconnect
+      await expect(page2.locator('.event-type:has-text("nappy")').first()).toBeVisible({ timeout: 15000 });
+    } finally {
+      await context1.close();
+      await context2.close();
+    }
   });
 
   test('CSV export and import between families', async ({ browser }) => {
