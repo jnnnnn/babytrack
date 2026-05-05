@@ -426,7 +426,13 @@ function initDragTimePicker() {
     const change = Math.round(deltaY / (4 / mult));
     if (change === 0) return;
 
-    dragPicker.minutes = ((dragPicker.minutes + change) % 1440 + 1440) % 1440;
+    dragPicker.minutes += change;
+    const dayOffset = Math.floor(dragPicker.minutes / 1440);
+    if (dayOffset !== 0) {
+      dragPicker.minutes -= dayOffset * 1440;
+      if (dragPicker.minutes < 0) dragPicker.minutes += 1440;
+      adjustDate(dayOffset);
+    }
     dragPicker.lastY = e.clientY;
     updateTimeDisplay();
   });
@@ -456,7 +462,7 @@ function updateDateDisplay() {
     d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
-function adjustDate(delta) { // eslint-disable-line no-unused-vars
+function adjustDate(delta) {
   const d = new Date(dragPicker.year, dragPicker.month, dragPicker.day + delta);
   dragPicker.year = d.getFullYear();
   dragPicker.month = d.getMonth();
