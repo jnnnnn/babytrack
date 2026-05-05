@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -259,8 +260,240 @@ func TestDBMigrationIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query version: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("expected version 2, got %d", version)
+	if version != 3 {
+		t.Errorf("expected version 3, got %d", version)
+	}
+}
+
+func TestBatchGetEntryCounts(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	f1, _ := db.CreateFamily("A", "")
+	f2, _ := db.CreateFamily("B", "")
+	f3, _ := db.CreateFamily("C", "") // no entries
+
+	db.UpsertEntry(&Entry{ID: "e1", FamilyID: f1.ID, Ts: 1, Type: "feed", Value: "x"})
+	db.UpsertEntry(&Entry{ID: "e2", FamilyID: f1.ID, Ts: 2, Type: "sleep", Value: "x"})
+	db.UpsertEntry(&Entry{ID: "e3", FamilyID: f2.ID, Ts: 3, Type: "feed", Value: "x"})
+
+	// Soft-delete an entry — should not be counted
+	db.DeleteEntry(f1.ID, "e2")
+
+	counts, err := db.GetEntryCounts([]string{f1.ID, f2.ID, f3.ID, "nonexistent"})
+	if err != nil {
+		t.Fatalf("GetEntryCounts failed: %v", err)
+	}
+	if counts[f1.ID] != 1 {
+		t.Errorf("f1: expected 1 (e2 deleted), got %d", counts[f1.ID])
+	}
+	if counts[f2.ID] != 1 {
+		t.Errorf("f2: expected 1, got %d", counts[f2.ID])
+	}
+	if counts[f3.ID] != 0 {
+		t.Errorf("f3: expected 0 (no entries), got %d", counts[f3.ID])
+	}
+	if counts["nonexistent"] != 0 {
+		t.Errorf("nonexistent: expected 0, got %d", counts["nonexistent"])
+	}
+}
+
+func TestBatchGetEntryCountsEmpty(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	counts, err := db.GetEntryCounts(nil)
+	if err != nil {
+		t.Fatalf("GetEntryCounts(nil) failed: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Errorf("expected empty map for nil input, got %d entries", len(counts))
+	}
+
+	counts, err = db.GetEntryCounts([]string{})
+	if err != nil {
+		t.Fatalf("GetEntryCounts([]) failed: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Errorf("expected empty map for empty input, got %d entries", len(counts))
+	}
+}
+
+func TestBatchGetLatestActivities(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	f1, _ := db.CreateFamily("A", "")
+	f2, _ := db.CreateFamily("B", "")
+	f3, _ := db.CreateFamily("C", "") // no entries
+
+	ts1 := int64(1000)
+	ts2 := int64(5000)
+	db.UpsertEntry(&Entry{ID: "e1", FamilyID: f1.ID, Ts: ts1, Type: "feed", Value: "x"})
+	db.UpsertEntry(&Entry{ID: "e2", FamilyID: f1.ID, Ts: ts2, Type: "sleep", Value: "x"})
+	db.UpsertEntry(&Entry{ID: "e3", FamilyID: f2.ID, Ts: 3000, Type: "feed", Value: "x"})
+
+	// Soft-delete the latest entry for f1 — should still be filtered out
+	db.DeleteEntry(f1.ID, "e2")
+
+	activities, err := db.GetLatestActivities([]string{f1.ID, f2.ID, f3.ID, "nonexistent"})
+	if err != nil {
+		t.Fatalf("GetLatestActivities failed: %v", err)
+	}
+	if activities[f1.ID] != ts1 {
+		t.Errorf("f1: expected %d (e2 deleted, e1 remains), got %d", ts1, activities[f1.ID])
+	}
+	if activities[f2.ID] != 3000 {
+		t.Errorf("f2: expected 3000, got %d", activities[f2.ID])
+	}
+	if _, ok := activities[f3.ID]; ok {
+		t.Errorf("f3: should not be in map (no entries), got %d", activities[f3.ID])
+	}
+	if _, ok := activities["nonexistent"]; ok {
+		t.Errorf("nonexistent: should not be in map, got %d", activities["nonexistent"])
+	}
+}
+
+func TestBatchGetLatestActivitiesAllDeleted(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	f1, _ := db.CreateFamily("A", "")
+	db.UpsertEntry(&Entry{ID: "e1", FamilyID: f1.ID, Ts: 999, Type: "feed", Value: "x"})
+	db.DeleteEntry(f1.ID, "e1")
+
+	activities, err := db.GetLatestActivities([]string{f1.ID})
+	if err != nil {
+		t.Fatalf("GetLatestActivities failed: %v", err)
+	}
+	if _, ok := activities[f1.ID]; ok {
+		t.Errorf("all entries deleted: should not be in map, got %d", activities[f1.ID])
+	}
+}
+
+func TestBatchGetLinkCounts(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	f1, _ := db.CreateFamily("A", "")
+	f2, _ := db.CreateFamily("B", "")
+	f3, _ := db.CreateFamily("C", "") // no links
+
+	// Active links (no expiry)
+	db.CreateAccessLink(f1.ID, "link-1", nil)
+	db.CreateAccessLink(f1.ID, "link-2", nil)
+	db.CreateAccessLink(f2.ID, "link-3", nil)
+
+	// Expired link (should not be counted)
+	past := time.Now().Add(-1 * time.Hour).UnixMilli()
+	db.CreateAccessLink(f1.ID, "expired", &past)
+
+	counts, err := db.GetLinkCounts([]string{f1.ID, f2.ID, f3.ID, "nonexistent"})
+	if err != nil {
+		t.Fatalf("GetLinkCounts failed: %v", err)
+	}
+	if counts[f1.ID] != 2 {
+		t.Errorf("f1: expected 2 active links (expired excluded), got %d", counts[f1.ID])
+	}
+	if counts[f2.ID] != 1 {
+		t.Errorf("f2: expected 1, got %d", counts[f2.ID])
+	}
+	if counts[f3.ID] != 0 {
+		t.Errorf("f3: expected 0, got %d", counts[f3.ID])
+	}
+	if counts["nonexistent"] != 0 {
+		t.Errorf("nonexistent: expected 0, got %d", counts["nonexistent"])
+	}
+}
+
+func TestBatchGetLinkCountsEmpty(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	counts, err := db.GetLinkCounts(nil)
+	if err != nil {
+		t.Fatalf("GetLinkCounts(nil) failed: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Errorf("expected empty map for nil input, got %d entries", len(counts))
+	}
+
+	counts, err = db.GetLinkCounts([]string{})
+	if err != nil {
+		t.Fatalf("GetLinkCounts([]) failed: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Errorf("expected empty map for empty input, got %d entries", len(counts))
+	}
+}
+
+func TestBatchMatchesSingles(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := NewDB(path)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	f1, _ := db.CreateFamily("A", "")
+	f2, _ := db.CreateFamily("B", "")
+	f3, _ := db.CreateFamily("C", "")
+
+	db.UpsertEntry(&Entry{ID: "e1", FamilyID: f1.ID, Ts: 1000, Type: "feed", Value: "x"})
+	db.UpsertEntry(&Entry{ID: "e2", FamilyID: f2.ID, Ts: 2000, Type: "sleep", Value: "x"})
+
+	db.CreateAccessLink(f1.ID, "l1", nil)
+	past := time.Now().Add(-1 * time.Hour).UnixMilli()
+	db.CreateAccessLink(f2.ID, "expired", &past)
+
+	ids := []string{f1.ID, f2.ID, f3.ID}
+
+	batchCounts, _ := db.GetEntryCounts(ids)
+	for _, f := range []*Family{f1, f2, f3} {
+		single, _ := db.GetEntryCount(f.ID)
+		if batchCounts[f.ID] != single {
+			t.Errorf("EntryCount mismatch for %s: batch=%d single=%d", f.ID, batchCounts[f.ID], single)
+		}
+	}
+
+	batchActivities, _ := db.GetLatestActivities(ids)
+	for _, f := range []*Family{f1, f2, f3} {
+		single, _ := db.GetLatestActivity(f.ID)
+		if batchActivities[f.ID] != single {
+			t.Errorf("LatestActivity mismatch for %s: batch=%d single=%d", f.ID, batchActivities[f.ID], single)
+		}
+	}
+
+	batchLinks, _ := db.GetLinkCounts(ids)
+	for _, f := range []*Family{f1, f2, f3} {
+		single, _ := db.GetLinkCount(f.ID)
+		if batchLinks[f.ID] != single {
+			t.Errorf("LinkCount mismatch for %s: batch=%d single=%d", f.ID, batchLinks[f.ID], single)
+		}
 	}
 }
 

@@ -120,13 +120,27 @@ func (s *Server) listFamilies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(families) == 0 {
+		jsonOK(w, []FamilyWithStats{})
+		return
+	}
+
+	ids := make([]string, len(families))
+	for i, f := range families {
+		ids[i] = f.ID
+	}
+
+	entryCounts, _ := s.db.GetEntryCounts(ids)
+	latestActivities, _ := s.db.GetLatestActivities(ids)
+	linkCounts, _ := s.db.GetLinkCounts(ids)
+
 	// Enrich with stats
 	result := make([]FamilyWithStats, len(families))
 	for i, f := range families {
 		result[i].Family = f
-		result[i].EntryCount, _ = s.db.GetEntryCount(f.ID)
-		result[i].LatestActivity, _ = s.db.GetLatestActivity(f.ID)
-		result[i].LinkCount, _ = s.db.GetLinkCount(f.ID)
+		result[i].EntryCount = entryCounts[f.ID]
+		result[i].LatestActivity = latestActivities[f.ID]
+		result[i].LinkCount = linkCounts[f.ID]
 	}
 
 	jsonOK(w, result)

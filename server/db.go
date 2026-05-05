@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -103,6 +104,12 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX idx_entries_seq ON entries(family_id, seq);
 		UPDATE entries SET seq = rowid;
 		UPDATE families SET seq = COALESCE((SELECT MAX(seq) FROM entries WHERE family_id = families.id), 0);`,
+
+		// v3: Add missing indexes for performance
+		`CREATE INDEX IF NOT EXISTS idx_access_links_family ON access_links(family_id, created_at);
+		CREATE INDEX IF NOT EXISTS idx_entries_sleep ON entries(family_id, type, ts);
+		CREATE INDEX IF NOT EXISTS idx_entries_family_deleted ON entries(family_id, deleted, ts);
+		CREATE INDEX IF NOT EXISTS idx_families_archived_created ON families(archived, created_at);`,
 	}
 
 	for i, m := range migrations {
@@ -589,4 +596,101 @@ func (db *DB) GetLinkCount(familyID string) (int, error) {
 		familyID, now,
 	).Scan(&count)
 	return count, err
+}
+
+// Batch queries for listFamilies (replaces N+1 pattern)
+
+func (db *DB) getPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return "(" + strings.Repeat("?,", n-1) + "?)"
+}
+
+func (db *DB) GetEntryCounts(familyIDs []string) (map[string]int, error) {
+	if len(familyIDs) == 0 {
+		return make(map[string]int), nil
+	}
+	args := make([]interface{}, len(familyIDs))
+	for i, id := range familyIDs {
+		args[i] = id
+	}
+	query := "SELECT family_id, COUNT(*) FROM entries WHERE deleted = 0 AND family_id IN " +
+		db.getPlaceholders(len(familyIDs)) + " GROUP BY family_id"
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int, len(familyIDs))
+	for rows.Next() {
+		var familyID string
+		var count int
+		if err := rows.Scan(&familyID, &count); err != nil {
+			return nil, err
+		}
+		result[familyID] = count
+	}
+	return result, rows.Err()
+}
+
+func (db *DB) GetLatestActivities(familyIDs []string) (map[string]int64, error) {
+	if len(familyIDs) == 0 {
+		return make(map[string]int64), nil
+	}
+	args := make([]interface{}, len(familyIDs))
+	for i, id := range familyIDs {
+		args[i] = id
+	}
+	query := "SELECT family_id, MAX(ts) FROM entries WHERE deleted = 0 AND family_id IN " +
+		db.getPlaceholders(len(familyIDs)) + " GROUP BY family_id"
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int64, len(familyIDs))
+	for rows.Next() {
+		var familyID string
+		var ts sql.NullInt64
+		if err := rows.Scan(&familyID, &ts); err != nil {
+			return nil, err
+		}
+		if ts.Valid {
+			result[familyID] = ts.Int64
+		}
+	}
+	return result, rows.Err()
+}
+
+func (db *DB) GetLinkCounts(familyIDs []string) (map[string]int, error) {
+	if len(familyIDs) == 0 {
+		return make(map[string]int), nil
+	}
+	now := time.Now().UnixMilli()
+	args := make([]interface{}, 0, len(familyIDs)+1)
+	args = append(args, now)
+	for _, id := range familyIDs {
+		args = append(args, id)
+	}
+	query := "SELECT family_id, COUNT(*) FROM access_links WHERE (expires_at IS NULL OR expires_at > ?) AND family_id IN " +
+		db.getPlaceholders(len(familyIDs)) + " GROUP BY family_id"
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int, len(familyIDs))
+	for rows.Next() {
+		var familyID string
+		var count int
+		if err := rows.Scan(&familyID, &count); err != nil {
+			return nil, err
+		}
+		result[familyID] = count
+	}
+	return result, rows.Err()
 }
