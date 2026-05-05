@@ -126,7 +126,16 @@
   <div id="time-picker-modal" class="modal-overlay" onclick="if(event.target === this) hideTimePicker()">
     <div class="modal">
       <h3>Select Time</h3>
-      <input type="datetime-local" id="custom-time" />
+      <div class="time-picker-date">
+        <button class="date-arrow" onclick="adjustDate(-1)">◀</button>
+        <span id="date-display"></span>
+        <button class="date-arrow" onclick="adjustDate(1)">▶</button>
+      </div>
+      <div id="drag-time-area" class="drag-time-area">
+        <div id="time-display" class="time-display">00:00</div>
+        <div class="drag-bar">⋯</div>
+        <div class="drag-hint">drag up/down</div>
+      </div>
       <div class="modal-buttons">
         <button class="cancel" onclick="hideTimePicker()">Cancel</button>
         <button class="confirm" onclick="saveWithCustomTime()">Save</button>

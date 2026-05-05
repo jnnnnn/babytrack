@@ -90,6 +90,7 @@ function init() {
     }
   });
 
+  initDragTimePicker();
   initReport();
 }
 
@@ -376,20 +377,102 @@ function handleLongPressEnd() {
   }
 }
 
+// Drag time picker
+const dragPicker = {
+  year: 0, month: 0, day: 0,
+  minutes: 0,
+  dragging: false,
+  lastY: 0,
+  history: [],
+};
+
+function initDragTimePicker() {
+  const area = document.getElementById('drag-time-area');
+  if (!area) return;
+
+  area.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    area.setPointerCapture(e.pointerId);
+    dragPicker.dragging = true;
+    dragPicker.lastY = e.clientY;
+    dragPicker.history = [{ y: e.clientY, t: Date.now() }];
+    area.classList.add('dragging');
+  });
+
+  area.addEventListener('pointermove', (e) => {
+    if (!dragPicker.dragging) return;
+    e.preventDefault();
+
+    const now = Date.now();
+    const deltaY = dragPicker.lastY - e.clientY;
+    if (Math.abs(deltaY) < 1) return;
+
+    dragPicker.history.push({ y: e.clientY, t: now });
+    dragPicker.history = dragPicker.history.filter(h => now - h.t < 150);
+
+    let velocity = 0;
+    if (dragPicker.history.length >= 2) {
+      const first = dragPicker.history[0];
+      const last = dragPicker.history[dragPicker.history.length - 1];
+      const dt = last.t - first.t;
+      if (dt > 0) velocity = Math.abs(first.y - last.y) / dt;
+    }
+
+    let mult = 1;
+    if (velocity > 1.0) mult = 60;
+    else if (velocity > 0.5) mult = 15;
+    else if (velocity > 0.2) mult = 5;
+
+    const change = Math.round(deltaY / (4 / mult));
+    if (change === 0) return;
+
+    dragPicker.minutes = ((dragPicker.minutes + change) % 1440 + 1440) % 1440;
+    dragPicker.lastY = e.clientY;
+    updateTimeDisplay();
+  });
+
+  area.addEventListener('pointerup', () => {
+    if (!dragPicker.dragging) return;
+    dragPicker.dragging = false;
+    area.classList.remove('dragging');
+  });
+
+  area.addEventListener('pointercancel', () => {
+    dragPicker.dragging = false;
+    area.classList.remove('dragging');
+  });
+}
+
+function updateTimeDisplay() {
+  const h = Math.floor(dragPicker.minutes / 60);
+  const m = dragPicker.minutes % 60;
+  document.getElementById('time-display').textContent =
+    String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+function updateDateDisplay() {
+  const d = new Date(dragPicker.year, dragPicker.month, dragPicker.day);
+  document.getElementById('date-display').textContent =
+    d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+function adjustDate(delta) { // eslint-disable-line no-unused-vars
+  const d = new Date(dragPicker.year, dragPicker.month, dragPicker.day + delta);
+  dragPicker.year = d.getFullYear();
+  dragPicker.month = d.getMonth();
+  dragPicker.day = d.getDate();
+  updateDateDisplay();
+}
+
 function showTimePicker() {
   const modal = document.getElementById('time-picker-modal');
-  const input = document.getElementById('custom-time');
-
-  // Set default to current time in local timezone
-  // datetime-local expects format: YYYY-MM-DDTHH:mm
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  input.value = `${year}-${month}-${day}T${hours}:${minutes}`;
-
+  dragPicker.year = now.getFullYear();
+  dragPicker.month = now.getMonth();
+  dragPicker.day = now.getDate();
+  dragPicker.minutes = now.getHours() * 60 + now.getMinutes();
+  updateDateDisplay();
+  updateTimeDisplay();
   modal.classList.add('show');
 }
 
@@ -425,16 +508,17 @@ async function save(type, value, btn, customTimestamp = null) {
 }
 
 async function saveWithCustomTime() {
-  const input = document.getElementById('custom-time');
-  const customTime = new Date(input.value);
+  const h = Math.floor(dragPicker.minutes / 60);
+  const m = dragPicker.minutes % 60;
+  const date = new Date(dragPicker.year, dragPicker.month, dragPicker.day, h, m);
 
-  if (!customTime || isNaN(customTime.getTime())) {
+  if (isNaN(date.getTime())) {
     alert('Please select a valid time');
     return;
   }
 
   const { type, value, btn } = longPressData;
-  await save(type, value, btn, customTime.toISOString());
+  await save(type, value, btn, date.toISOString());
   hideTimePicker();
 }
 
