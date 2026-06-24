@@ -6,7 +6,7 @@ A baby activity tracker PWA for lactation consultants and their clients. Collabo
 
 ## Features
 
-- **Track events** — feeds (breast/bottle/solids), sleeps, wet/dirty nappies, soothing
+- **Track events** — feeds (breast/bottle/solids), sleeps, wet/dirty nappies, soothing, configurable
 - **Real-time sync** — Mum, Dad, and the night nurse all see updates instantly via WebSocket
 - **Offline-first** — fully works without internet; syncs when reconnected
 - **No logins for carers** — shareable magic links get carers started in one tap
