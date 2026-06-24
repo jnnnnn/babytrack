@@ -224,6 +224,7 @@ function scheduleUIUpdate() {
     window.requestAnimationFrame(() => {
       updateDailyReport();
       updateButtonStates();
+      drawSleepChart();
     });
   }, 100); // 100ms debounce
 }
@@ -511,6 +512,10 @@ async function save(type, value, btn, customTimestamp = null) {
   updateTimestamp('Saved: ' + eventTime.toLocaleTimeString());
   updateDailyReport();
   updateButtonStates();
+
+  if (type === 'sleep') {
+    drawSleepChart();
+  }
 }
 
 async function saveWithCustomTime() {
@@ -588,6 +593,198 @@ async function saveNote(e) {
   if (!v) return;
   await save('note', v);
   e.target.value = '';
+}
+
+async function loadAllEntries() {
+  if (!db) await initDB();
+  const transaction = db.transaction(['entries'], 'readonly');
+  const objectStore = transaction.objectStore('entries');
+  const request = objectStore.getAll();
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
+async function drawSleepChart() {
+  const entries = await loadAllEntries();
+  const activeEntries = entries.filter(e => !e.deleted);
+  const sleepEntries = activeEntries
+    .filter(e => e.type === 'sleep')
+    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+  if (sleepEntries.length === 0) {
+    const card = document.getElementById('sleep-chart-card');
+    if (card) card.style.display = 'none';
+    return;
+  }
+
+  const card = document.getElementById('sleep-chart-card');
+  if (card) card.style.display = '';
+
+  const now = new Date();
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    days.push(d);
+  }
+
+  const sessions = [];
+  let session = null;
+  for (const e of sleepEntries) {
+    const ts = new Date(e.ts);
+    if (e.value === 'sleeping' || e.value === 'nap') {
+      if (session) {
+        session.end = ts;
+        sessions.push(session);
+      }
+      session = { start: ts, end: null, type: e.value };
+    } else if (e.value === 'awake') {
+      if (session) {
+        session.end = ts;
+        sessions.push(session);
+        session = null;
+      }
+    }
+  }
+  if (session) {
+    session.end = new Date();
+    sessions.push(session);
+  }
+
+  const windowStart = new Date(days[0]);
+  windowStart.setHours(0, 0, 0, 0);
+  const relevant = sessions.filter(s => s.end >= windowStart);
+
+  const canvas = document.getElementById('sleep-chart');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  const W = rect.width, H = rect.height;
+  const pad = { left: 45, right: 12, top: 8, bottom: 28 };
+  const pw = W - pad.left - pad.right;
+  const ph = H - pad.top - pad.bottom;
+  const barW = Math.max(pw / days.length * 0.7, 6);
+
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--card').trim() || '#fff';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.font = '10px system-ui';
+  ctx.textBaseline = 'middle';
+  for (let h = 0; h <= 24; h++) {
+    const y = pad.top + (h / 24) * ph;
+    ctx.strokeStyle = h % 6 === 0 ? '#f0f0f0' : '#f6f6f6';
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + pw, y);
+    ctx.stroke();
+    if (h % 3 === 0) {
+      ctx.fillStyle = '#999';
+      ctx.textAlign = 'right';
+      ctx.fillText(h.toString().padStart(2, '0') + ':00', pad.left - 4, y);
+    }
+  }
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let i = 0; i < days.length; i++) {
+    const cx = pad.left + (i + 0.5) * (pw / days.length);
+    ctx.strokeStyle = '#f0f0f0';
+    ctx.beginPath();
+    ctx.moveTo(cx, pad.top);
+    ctx.lineTo(cx, pad.top + ph);
+    ctx.stroke();
+
+    const label = i === days.length - 1 ? 'Today' :
+      days[i].toLocaleDateString([], { weekday: 'short', day: 'numeric' });
+    ctx.fillStyle = '#666';
+    ctx.fillText(label, cx, pad.top + ph + 4);
+  }
+
+  ctx.lineWidth = 1;
+  for (const s of relevant) {
+    let cur = new Date(s.start);
+    const end = new Date(s.end);
+
+    while (cur < end) {
+      const ds = new Date(cur);
+      ds.setHours(0, 0, 0, 0);
+      const de = new Date(ds);
+      de.setDate(de.getDate() + 1);
+      const segEnd = end < de ? end : de;
+
+      let dayIdx = -1;
+      for (let i = 0; i < days.length; i++) {
+        if (days[i].getFullYear() === ds.getFullYear() &&
+          days[i].getMonth() === ds.getMonth() &&
+          days[i].getDate() === ds.getDate()) {
+          dayIdx = i;
+          break;
+        }
+      }
+
+      if (dayIdx >= 0) {
+        const cx = pad.left + (dayIdx + 0.5) * (pw / days.length);
+        const sf = (cur.getHours() * 60 + cur.getMinutes()) / (24 * 60);
+        const sameDay = segEnd.getDate() === ds.getDate() &&
+          segEnd.getMonth() === ds.getMonth() &&
+          segEnd.getFullYear() === ds.getFullYear();
+        const ef = sameDay
+          ? (segEnd.getHours() * 60 + segEnd.getMinutes()) / (24 * 60)
+          : 1.0;
+        const y1 = pad.top + sf * ph;
+        const y2 = pad.top + ef * ph;
+
+        ctx.fillStyle = s.type === 'sleeping'
+          ? 'rgba(76,132,255,0.55)'
+          : 'rgba(255,165,0,0.55)';
+        ctx.strokeStyle = s.type === 'sleeping' ? '#4c84ff' : '#ff8c00';
+        roundRect(ctx, cx - barW / 2, y1, barW, Math.max(y2 - y1, 2), 4);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      cur = de;
+    }
+  }
+
+  if (relevant.length > 0) {
+    const lx = Math.max(pad.left, pad.left + pw - 110);
+    const ly = pad.top + ph + 20;
+    ctx.font = '11px system-ui';
+
+    ctx.fillStyle = '#4c84ff';
+    roundRect(ctx, lx, ly, 11, 11, 2);
+    ctx.fill();
+    ctx.fillStyle = '#333';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Night', lx + 15, ly + 5.5);
+
+    ctx.fillStyle = '#ff8c00';
+    roundRect(ctx, lx + 42, ly, 11, 11, 2);
+    ctx.fill();
+    ctx.fillText('Nap', lx + 56, ly + 5.5);
+  }
 }
 
 async function downloadCSV() {
@@ -1419,6 +1616,8 @@ async function updateDailyReport() {
 
   // Timeline needs activeEntries to show cross-midnight sleep properly
   drawTimeline(activeEntries);
+
+  drawSleepChart();
 }
 
 function calculateDailyStats(entries) {
@@ -2104,6 +2303,7 @@ function initReport() {
     renderButtons();
     updateDailyReport();
     updateButtonStates();
+    drawSleepChart();
 
     // Setup event filters
     d3.select('#event-filter').on('input', applyEventFilters);
