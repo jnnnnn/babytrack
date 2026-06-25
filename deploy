@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "=== Verify first ==="
-./verify
+uv run verify.py
 
 echo "=== Deploy to fly.io ==="
 cd server

@@ -14,7 +14,7 @@ After each iteration, measure test coverage, simplify the code and tests, and up
 
 When writing or adjusting code or tests, see [docs/TESTS.md](docs/TESTS.md).
 
-Run `./verify` to test and lint before completing an iteration.
+Run `uv run verify.py` to test and lint before completing an iteration.
 
 Development iteration speed is important, so keep everything organized by related functionality, not file types or anything else weird. Iteration speed is important, so the tests must run fast.
 

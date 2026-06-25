@@ -37,7 +37,7 @@ Run `bd ready` to see unblocked work. Start with:
 ## Workflow
 1. `bd update <id> --status=in_progress` before starting a task
 2. Write tests alongside implementation
-3. Run `./verify` before completing
+3. Run `uv run verify.py` before completing
 4. `bd close <id>` when done
 5. `bd sync` at session end
 

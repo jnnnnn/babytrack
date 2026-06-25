@@ -60,7 +60,7 @@ The server serves static files from `server/static/`. Changes to JS/CSS/HTML tak
 Run the full pipeline:
 
 ```bash
-./verify
+uv run verify.py
 ```
 
 This runs: `gofmt`, ESLint, Go unit/integration tests, and Playwright E2E tests.
@@ -68,8 +68,8 @@ This runs: `gofmt`, ESLint, Go unit/integration tests, and Playwright E2E tests.
 Useful options:
 
 ```bash
-./verify --human      # Headed browser, slow-motion (for debugging)
-./verify --uncovered  # Print uncovered Go lines
+uv run verify.py --human      # Headed browser, slow-motion (for debugging)
+uv run verify.py --uncovered  # Print uncovered Go lines
 ```
 
 To run just the Go tests:

@@ -144,7 +144,7 @@ Exported types (`Entry`, `Family`, `Hub`) lack documentation. Makes API surface 
 
 Current: **67.4%**
 
-Uncovered areas (from `./verify --uncovered`):
+Uncovered areas (from `uv run verify.py --uncovered`):
 - Error paths in HTTP handlers (auth failures, DB errors)
 - Some WebSocket edge cases
 - Admin summary handler timezone logic

@@ -175,10 +175,10 @@ func newTestClient() *http.Client {
 
 ```bash
 # Full verification (format, lint, unit tests, E2E)
-./verify
+uv run verify.py
 
 # Human mode - headed browser with slow motion for demos
-./verify --human
+uv run verify.py --human
 
 # Go unit tests only
 go test ./...

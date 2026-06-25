@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 const isHuman = !!process.env.HUMAN_MODE;
+const isWin = process.platform === 'win32';
 
 export default defineConfig({
   testDir: './e2e',
@@ -21,7 +22,9 @@ export default defineConfig({
     { name: 'firefox', use: { browserName: 'firefox' }, }
   ],
   webServer: {
-    command: 'cd server && go build -o babytrackd && ./babytrackd',
+    command: isWin
+      ? 'cd server && go build -o babytrackd.exe && babytrackd.exe'
+      : 'cd server && go build -o babytrackd && ./babytrackd',
     url: 'http://localhost:8081/health',
     timeout: 15000,
     reuseExistingServer: !process.env.CI,
