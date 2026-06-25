@@ -489,11 +489,6 @@ function hideTimePicker() {
   longPressData = null;
 }
 
-// Helper to find last sleep start entry
-function _findLastSleepStart(entries) {
-  return [...entries].reverse().find((e) => !e.deleted && e.type === 'sleep' && (e.value === 'sleeping' || e.value === 'nap'));
-}
-
 async function save(type, value, btn, customTimestamp = null) {
   const ts = customTimestamp || nowIso();
   const eventTime = new Date(ts);
@@ -886,8 +881,6 @@ async function importCSV() {
 
     const text = await file.text();
     const lines = text.trim().split('\n');
-    const _header = lines[0];
-
     // Skip header row
     let imported = 0;
     let skipped = 0;
@@ -1002,7 +995,6 @@ async function downloadHourlyReport() {
 
     // Track sleep periods for duration calculation
     let sleepStart = null;
-    let _totalSleepMs = 0;
     const sleepByHour = {};
 
     // Sort entries by time
@@ -1020,10 +1012,6 @@ async function downloadHourlyReport() {
           const sleepType = e.value === 'nap' ? 'nap' : 'sleep';
           hourlyData[hour].sleep.push(sleepType);
         } else if (e.value === 'awake' && sleepStart) {
-          // Calculate sleep duration
-          const duration = date - sleepStart;
-          _totalSleepMs += duration;
-
           // Distribute sleep across hours
           let current = new Date(sleepStart);
           while (current < date) {
@@ -1137,8 +1125,6 @@ async function updateButtonStates() {
   buttonGroups.forEach((group) => {
     const categoryEntries = activeEntries.filter((e) => e.type === group.category);
     const lastEntry = [...categoryEntries].pop();
-    const _elapsed = lastEntry ? formatElapsedTime(new Date(lastEntry.ts).getTime()) : null;
-
     if (group.stateful) {
       group.buttons.forEach((btn) => {
         // each button shows a timer for when its own state changed. if it is the last entry, it is active, and shows elapsed time.
@@ -1851,7 +1837,6 @@ function updateHourlyGrid(entries) {
 
 function updateSleepAttempts(entries) {
   const sleepEvents = entries.filter((e) => e.type === 'sleep');
-  const _sootheEvents = entries.filter((e) => e.type === 'soothe' || e.type === '5s');
 
   const attempts = [];
   let currentAttempt = null;

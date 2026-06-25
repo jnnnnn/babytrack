@@ -10,6 +10,9 @@ playwright-report/
 *.db-wal
 *.db-shm
 
+# Lock files (project uses pnpm)
+package-lock.json
+
 # Build
 server/babytrackd
 
