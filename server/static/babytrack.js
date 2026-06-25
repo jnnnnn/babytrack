@@ -685,6 +685,12 @@ async function drawSleepChart() {
   const ph = H - pad.top - pad.bottom;
   const barW = Math.max(pw / days.length * 0.7, 6);
 
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridMajor = isDark ? 'rgba(255,255,255,0.12)' : '#f0f0f0';
+  const gridMinor = isDark ? 'rgba(255,255,255,0.06)' : '#f6f6f6';
+  const textMinor = isDark ? '#888' : '#999';
+  const textDay = isDark ? '#aaa' : '#666';
+
   ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--card').trim() || '#fff';
   ctx.fillRect(0, 0, W, H);
 
@@ -692,13 +698,13 @@ async function drawSleepChart() {
   ctx.textBaseline = 'middle';
   for (let h = 0; h <= 24; h++) {
     const y = pad.top + (h / 24) * ph;
-    ctx.strokeStyle = h % 6 === 0 ? '#f0f0f0' : '#f6f6f6';
+    ctx.strokeStyle = h % 6 === 0 ? gridMajor : gridMinor;
     ctx.beginPath();
     ctx.moveTo(pad.left, y);
     ctx.lineTo(pad.left + pw, y);
     ctx.stroke();
     if (h % 3 === 0) {
-      ctx.fillStyle = '#999';
+      ctx.fillStyle = textMinor;
       ctx.textAlign = 'right';
       ctx.fillText(h.toString().padStart(2, '0') + ':00', pad.left - 4, y);
     }
@@ -708,7 +714,7 @@ async function drawSleepChart() {
   ctx.textBaseline = 'top';
   for (let i = 0; i < days.length; i++) {
     const cx = pad.left + (i + 0.5) * (pw / days.length);
-    ctx.strokeStyle = '#f0f0f0';
+    ctx.strokeStyle = gridMajor;
     ctx.beginPath();
     ctx.moveTo(cx, pad.top);
     ctx.lineTo(cx, pad.top + ph);
@@ -716,7 +722,7 @@ async function drawSleepChart() {
 
     const label = i === days.length - 1 ? 'Today' :
       days[i].toLocaleDateString([], { weekday: 'short', day: 'numeric' });
-    ctx.fillStyle = '#666';
+    ctx.fillStyle = textDay;
     ctx.fillText(label, cx, pad.top + ph + 4);
   }
 
@@ -767,6 +773,23 @@ async function drawSleepChart() {
     }
   }
 
+  const nowY = pad.top + (now.getHours() * 60 + now.getMinutes()) / (24 * 60) * ph;
+  const nowColor = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.35)';
+  ctx.strokeStyle = nowColor;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad.left, nowY);
+  ctx.lineTo(pad.left + pw, nowY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineWidth = 1;
+  ctx.fillStyle = nowColor;
+  ctx.font = '9px system-ui';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('now', pad.left + pw + 2, nowY);
+
   if (relevant.length > 0) {
     const lx = Math.max(pad.left, pad.left + pw - 110);
     const ly = pad.top + ph + 20;
@@ -775,7 +798,7 @@ async function drawSleepChart() {
     ctx.fillStyle = '#4c84ff';
     roundRect(ctx, lx, ly, 11, 11, 2);
     ctx.fill();
-    ctx.fillStyle = '#333';
+    ctx.fillStyle = isDark ? '#ddd' : '#333';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText('Night', lx + 15, ly + 5.5);
