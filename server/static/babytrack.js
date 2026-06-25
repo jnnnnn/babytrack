@@ -637,9 +637,10 @@ async function drawSleepChart() {
   if (card) card.style.display = '';
 
   const now = new Date();
+  const reportDate = new Date(currentReportDate);
   const days = [];
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const d = new Date(reportDate.getFullYear(), reportDate.getMonth(), reportDate.getDate() - i);
     days.push(d);
   }
 
@@ -720,7 +721,8 @@ async function drawSleepChart() {
     ctx.lineTo(cx, pad.top + ph);
     ctx.stroke();
 
-    const label = i === days.length - 1 ? 'Today' :
+    const dayIsToday = days[i].toDateString() === now.toDateString();
+    const label = dayIsToday ? 'Today' :
       days[i].toLocaleDateString([], { weekday: 'short', day: 'numeric' });
     ctx.fillStyle = textDay;
     ctx.fillText(label, cx, pad.top + ph + 4);
@@ -773,22 +775,25 @@ async function drawSleepChart() {
     }
   }
 
-  const nowY = pad.top + (now.getHours() * 60 + now.getMinutes()) / (24 * 60) * ph;
-  const nowColor = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.35)';
-  ctx.strokeStyle = nowColor;
-  ctx.lineWidth = 2;
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  ctx.moveTo(pad.left, nowY);
-  ctx.lineTo(pad.left + pw, nowY);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.lineWidth = 1;
-  ctx.fillStyle = nowColor;
-  ctx.font = '9px system-ui';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'bottom';
-  ctx.fillText('now', pad.left + pw + 2, nowY);
+  const isToday = reportDate.toDateString() === now.toDateString();
+  if (isToday) {
+    const nowY = pad.top + (now.getHours() * 60 + now.getMinutes()) / (24 * 60) * ph;
+    const nowColor = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.35)';
+    ctx.strokeStyle = nowColor;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, nowY);
+    ctx.lineTo(pad.left + pw, nowY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1;
+    ctx.fillStyle = nowColor;
+    ctx.font = '9px system-ui';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('now', pad.left + pw + 2, nowY);
+  }
 
   if (relevant.length > 0) {
     const lx = Math.max(pad.left, pad.left + pw - 110);
