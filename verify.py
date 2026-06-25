@@ -100,7 +100,7 @@ def main():
     else:
         run(["npx", "playwright", "test"])
 
-    print("\n✓ All checks passed")
+    print("\nAll checks passed")
 
 if __name__ == "__main__":
     main()

@@ -16,3 +16,4 @@ server/babytrackd
 # IDE
 .idea/
 .vscode/
+server/babytrackd.exe
