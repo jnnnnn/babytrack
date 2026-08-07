@@ -34,6 +34,11 @@ export default [
         IDBKeyRange: "readonly",
         crypto: "readonly",
         getComputedStyle: "readonly",
+        // Service worker globals
+        self: "readonly",
+        caches: "readonly",
+        clients: "readonly",
+        Registration: "readonly",
         // External libs
         d3: "readonly",
         SyncClient: "readonly",

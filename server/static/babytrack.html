@@ -3,12 +3,19 @@
 
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#3498db" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
   <title>Baby Log</title>
   <script src="https://unpkg.com/d3@7"></script>
   <script src="sync-client.js"></script>
   <link rel="stylesheet" href="babytrack.css" />
   <script src="babytrack.js"></script>
-
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
 </head>
 
 <body onload="init()">

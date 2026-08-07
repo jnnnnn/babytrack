@@ -28,11 +28,15 @@ server/
 ├── Dockerfile        # Multi-stage Alpine build
 ├── fly.toml          # Fly.io deployment config
 └── static/
-    ├── babytrack.html    # Main tracking page
-    ├── babytrack.js      # App logic (~2200 lines)
-    ├── babytrack.css     # Stylesheet with dark mode
-    ├── sync-client.js    # WebSocket sync client
-    └── admin.html        # Self-contained admin dashboard
+    ├── babytrack.html       # Main tracking page
+    ├── babytrack.js         # App logic (~2500 lines)
+    ├── babytrack.css        # Stylesheet with dark mode
+    ├── sync-client.js       # WebSocket sync client
+    ├── admin.html           # Self-contained admin dashboard
+    ├── manifest.json        # PWA web app manifest
+    ├── sw.js                # Service worker (offline cache)
+    ├── icon-192.png         # PWA icon 192×192
+    └── icon-512.png         # PWA icon 512×512
 e2e/
 ├── admin.spec.ts          # Playwright: admin workflow
 └── client-workflow.spec.ts # Playwright: client tracking + sync
@@ -45,15 +49,24 @@ e2e/
 cd server
 go run .
 
-# Build for production (CGO required for SQLite)
-CGO_ENABLED=1 go build -o babytrackd .
+# Run with HTTPS for phone testing (PWA needs secure context)
+# Starts with a self-signed cert at https://<local-ip>:8080
+TLS=true go run .
+```
+
+When testing on a phone, use the HTTPS URL (e.g. `https://192.168.1.88:8080`) — service workers require a secure context, and only `localhost`/`127.0.0.1` are considered secure over plain HTTP. The self-signed cert will trigger a browser warning you must accept.
+
+Production deploys (Fly.io) handle TLS termination transparently, so `TLS=true` is not needed in production.
+
+```bash
+# Build for production
+cd server
+go build -o babytrackd .
 
 # Docker
 cd server
 docker build -t babytrackd .
 ```
-
-The server serves static files from `server/static/`. Changes to JS/CSS/HTML take effect immediately (no build step).
 
 ## Testing
 

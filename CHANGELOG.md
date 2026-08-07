@@ -8,6 +8,10 @@
 - Sleep chart anchors to the selected report date
 - `verify.py` (cross-platform Python verifier replacing bash script)
 - `.npmrc` enforcing pnpm as package manager
+- PWA: web app manifest, service worker with offline cache, installable on phones
+- Self-signed HTTPS cert generation (`TLS=true`) for local phone testing
+- App icons (192px, 512px)
+- Service worker globals to ESLint config
 
 ### Changed
 - Switched from `mattn/go-sqlite3` (CGO) to `modernc.org/sqlite` (pure Go)

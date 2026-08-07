@@ -9,6 +9,7 @@ A baby activity tracker PWA for lactation consultants and their clients. Collabo
 - **Track events** — feeds (breast/bottle/solids), sleeps, wet/dirty nappies, soothing, configurable
 - **Real-time sync** — Mum, Dad, and the night nurse all see updates instantly via WebSocket
 - **Offline-first** — fully works without internet; syncs when reconnected
+- **Installable on phones** — PWA with service worker, works offline via cache
 - **No logins for carers** — shareable magic links get carers started in one tap
 - **Admin dashboard** — consultant manages families, views daily/hourly summaries, generates access links
 - **Dark mode** — follows system preference
@@ -23,10 +24,15 @@ cd babytrack
 
 # Admin user is created on first run
 ADMIN_USER=admin ADMIN_PASS=choose-a-password go run ./server
+
+# For phone testing (PWA needs HTTPS):
+TLS=true ADMIN_USER=admin ADMIN_PASS=choose-a-password go run ./server
 ```
 
 Open [http://localhost:8080/admin](http://localhost:8080/admin) to log in as admin and create your first family.  
 Open [http://localhost:8080](http://localhost:8080) and enter an access link token to start tracking.
+
+On phones, use the HTTPS URL (e.g. `https://192.168.1.88:8080`) and accept the self-signed cert warning. The app can then be installed to the home screen.
 
 ## Docs
 
