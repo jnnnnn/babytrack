@@ -260,8 +260,8 @@ func TestDBMigrationIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query version: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("expected version 3, got %d", version)
+	if version != 4 {
+		t.Errorf("expected version 4, got %d", version)
 	}
 }
 

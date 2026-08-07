@@ -12,6 +12,10 @@
 - Self-signed HTTPS cert generation (`TLS=true`) for local phone testing
 - App icons (192px, 512px)
 - Service worker globals to ESLint config
+- Push notifications via Web Push (VAPID) with per-button notify toggle in config modal
+- Service worker push event handler with notification click-to-focus
+- VAPID key auto-generation on first run
+- `push_subscriptions` table for storing browser push endpoints
 
 ### Changed
 - Switched from `mattn/go-sqlite3` (CGO) to `modernc.org/sqlite` (pure Go)

@@ -42,6 +42,9 @@ export default [
         // External libs
         d3: "readonly",
         SyncClient: "readonly",
+        // Encoding
+        btoa: "readonly",
+        atob: "readonly",
       },
     },
     rules: {

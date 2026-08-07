@@ -1,4 +1,4 @@
-const CACHE = 'babytrack-v1';
+const CACHE = 'babytrack-v2';
 const ASSETS = [
   '/',
   '/babytrack.css',
@@ -40,6 +40,40 @@ self.addEventListener('fetch', (e) => {
         return resp;
       }).catch(() => cached);
       return cached || fetched;
+    })
+  );
+});
+
+self.addEventListener('push', (e) => {
+  let data = { title: 'BabyTrack', body: 'New activity logged' };
+  if (e.data) {
+    try { data = e.data.json(); } catch (_) {
+      data.body = e.data.text();
+    }
+  }
+  e.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: 'babytrack-event',
+      vibrate: [200, 100, 200],
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow('/');
+      }
     })
   );
 });

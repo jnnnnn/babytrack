@@ -11,34 +11,34 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for now; tighten in production
+		return true
 	},
 }
 
-// Hub maintains connected clients grouped by family
 type Hub struct {
 	mu       sync.RWMutex
 	families map[string]map[*Client]bool
 	db       *DB
+	push     *pushManager
 }
 
-// Client represents a WebSocket connection
 type Client struct {
 	hub      *Hub
 	conn     *websocket.Conn
 	send     chan []byte
 	familyID string
-	label    string // from access link
+	label    string
+	token    string // access link token
 }
 
-func NewHub(db *DB) *Hub {
+func NewHub(db *DB, push *pushManager) *Hub {
 	return &Hub{
 		families: make(map[string]map[*Client]bool),
 		db:       db,
+		push:     push,
 	}
 }
 
-// Register adds a client to its family room
 func (h *Hub) Register(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -51,7 +51,6 @@ func (h *Hub) Register(c *Client) {
 	h.broadcastPresenceLocked(c.familyID)
 }
 
-// Unregister removes a client
 func (h *Hub) Unregister(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -67,7 +66,6 @@ func (h *Hub) Unregister(c *Client) {
 	close(c.send)
 }
 
-// Broadcast sends a message to all clients in a family
 func (h *Hub) Broadcast(familyID string, msg []byte, exclude *Client) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -78,7 +76,6 @@ func (h *Hub) Broadcast(familyID string, msg []byte, exclude *Client) {
 			select {
 			case c.send <- msg:
 			default:
-				// Client buffer full, skip
 			}
 		}
 	}
@@ -106,23 +103,21 @@ func (h *Hub) broadcastPresenceLocked(familyID string) {
 	}
 }
 
-// WebSocket message types
 type WSMessage struct {
 	Type        string          `json:"type"`
 	Action      string          `json:"action,omitempty"`
 	Entry       json.RawMessage `json:"entry,omitempty"`
-	Entries     json.RawMessage `json:"entries,omitempty"` // for bulk sync
+	Entries     json.RawMessage `json:"entries,omitempty"`
 	ID          string          `json:"id,omitempty"`
 	Data        json.RawMessage `json:"data,omitempty"`
-	SinceUpdate int64           `json:"since_update,omitempty"` // deprecated: for old clients
-	Cursor      int64           `json:"cursor,omitempty"`       // seq cursor for sync
-	Limit       int             `json:"limit,omitempty"`        // batch size for sync
+	SinceUpdate int64           `json:"since_update,omitempty"`
+	Cursor      int64           `json:"cursor,omitempty"`
+	Limit       int             `json:"limit,omitempty"`
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log := loggerFromCtx(r.Context())
 
-	// Auth via cookie
 	cookie, err := r.Cookie("client_session")
 	if err != nil {
 		log.Debug("ws auth failed: no cookie", "error", err)
@@ -151,11 +146,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		send:     make(chan []byte, 256),
 		familyID: link.FamilyID,
 		label:    link.Label,
+		token:    cookie.Value,
 	}
 
 	s.hub.Register(client)
 
-	// Send initial state
 	s.sendInit(client)
 
 	go client.writePump()
@@ -165,9 +160,15 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sendInit(c *Client) {
 	config, _ := s.db.GetConfig(c.familyID)
 
+	vapidPublicKey := ""
+	if s.hub.push != nil {
+		vapidPublicKey = s.hub.push.publicKey()
+	}
+
 	msg, _ := json.Marshal(map[string]any{
-		"type":   "init",
-		"config": config,
+		"type":             "init",
+		"config":           config,
+		"vapid_public_key": vapidPublicKey,
 	})
 	c.send <- msg
 }
@@ -196,6 +197,10 @@ func (c *Client) readPump(s *Server) {
 			s.handleSyncMessage(c, msg)
 		case "config":
 			s.handleConfigMessage(c, msg)
+		case "push_subscribe":
+			s.handlePushSubscribe(c, msg)
+		case "push_unsubscribe":
+			s.handlePushUnsubscribe(c)
 		case "ping":
 			c.send <- []byte(`{"type":"pong"}`)
 		}
@@ -226,7 +231,6 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 			return
 		}
 
-		// Send entry_ack to the submitting client
 		ack, _ := json.Marshal(map[string]any{
 			"type": "entry_ack",
 			"id":   entry.ID,
@@ -234,13 +238,14 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 		})
 		c.send <- ack
 
-		// Broadcast to other clients
 		broadcast, _ := json.Marshal(map[string]any{
 			"type":   "entry",
 			"action": msg.Action,
 			"entry":  entry,
 		})
 		s.hub.Broadcast(c.familyID, broadcast, c)
+
+		s.maybeSendPush(c, entry.Type, entry.Value)
 
 	case "delete":
 		seq, err := s.db.DeleteEntry(c.familyID, msg.ID)
@@ -249,7 +254,6 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 			return
 		}
 
-		// Send entry_ack to the submitting client
 		ack, _ := json.Marshal(map[string]any{
 			"type": "entry_ack",
 			"id":   msg.ID,
@@ -267,6 +271,78 @@ func (s *Server) handleEntryMessage(c *Client, msg WSMessage) {
 	}
 }
 
+func (s *Server) maybeSendPush(c *Client, entryType, entryValue string) {
+	if s.hub.push == nil {
+		return
+	}
+
+	config, err := s.db.GetConfig(c.familyID)
+	if err != nil {
+		return
+	}
+
+	notifyMap := parseNotifyConfig(config)
+	if !notifyMap[entryValue] {
+		return
+	}
+
+	subs, err := s.db.GetPushSubscriptions(c.familyID, c.token)
+	if err != nil {
+		slog.Error("failed to get push subscriptions", "error", err, "family_id", c.familyID)
+		return
+	}
+
+	title := c.label
+	if title == "" {
+		title = "BabyTrack"
+	}
+	body := entryType + ": " + entryValue
+
+	for _, sub := range subs {
+		go func(sub PushSubscription) {
+			if err := s.hub.push.sendPushNotification(&sub, title, body); err != nil {
+				slog.Warn("push send failed", "error", err)
+			}
+		}(sub)
+	}
+}
+
+func (s *Server) handlePushSubscribe(c *Client, msg WSMessage) {
+	var sub PushSubscription
+	if err := json.Unmarshal(msg.Data, &sub); err != nil {
+		slog.Warn("invalid push subscribe data", "error", err)
+		return
+	}
+	sub.FamilyID = c.familyID
+	sub.Token = c.token
+
+	if err := s.db.SavePushSubscription(&sub); err != nil {
+		slog.Error("failed to save push subscription", "error", err, "family_id", c.familyID)
+		return
+	}
+
+	ack, _ := json.Marshal(map[string]any{
+		"type": "push_subscribe_ack",
+	})
+	c.send <- ack
+
+	slog.Debug("push subscription saved", "family_id", c.familyID, "token", c.token[:min(8, len(c.token))])
+}
+
+func (s *Server) handlePushUnsubscribe(c *Client) {
+	if err := s.db.DeletePushSubscription(c.familyID, c.token); err != nil {
+		slog.Error("failed to delete push subscription", "error", err, "family_id", c.familyID)
+		return
+	}
+
+	ack, _ := json.Marshal(map[string]any{
+		"type": "push_unsubscribe_ack",
+	})
+	c.send <- ack
+
+	slog.Debug("push subscription removed", "family_id", c.familyID, "token", c.token[:min(8, len(c.token))])
+}
+
 func (s *Server) handleConfigMessage(c *Client, msg WSMessage) {
 	if err := s.db.SaveConfig(c.familyID, string(msg.Data)); err != nil {
 		slog.Error("failed to save config", "error", err, "family_id", c.familyID)
@@ -280,11 +356,7 @@ func (s *Server) handleConfigMessage(c *Client, msg WSMessage) {
 	s.hub.Broadcast(c.familyID, broadcast, c)
 }
 
-// handleSyncMessage handles sync requests from clients
-// New protocol: {"type": "sync_request", "cursor": 123, "limit": 500}
-// Also supports legacy: {"type": "sync", "since_update": 1234567890, "entries": [...]}
 func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
-	// First, process any entries the client is sending (legacy bulk sync)
 	if len(msg.Entries) > 0 {
 		var clientEntries []Entry
 		if err := json.Unmarshal(msg.Entries, &clientEntries); err == nil {
@@ -295,7 +367,6 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 					continue
 				}
 
-				// Send entry_ack for each entry
 				ack, _ := json.Marshal(map[string]any{
 					"type": "entry_ack",
 					"id":   e.ID,
@@ -303,7 +374,6 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 				})
 				c.send <- ack
 
-				// Broadcast to other clients
 				var broadcast []byte
 				if e.Deleted {
 					broadcast, _ = json.Marshal(map[string]any{
@@ -324,7 +394,6 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 		}
 	}
 
-	// Server-push pagination: send all pages immediately, no client round trips
 	cursor := msg.Cursor
 	limit := msg.Limit
 	if limit <= 0 {

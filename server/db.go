@@ -110,6 +110,17 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_entries_sleep ON entries(family_id, type, ts);
 		CREATE INDEX IF NOT EXISTS idx_entries_family_deleted ON entries(family_id, deleted, ts);
 		CREATE INDEX IF NOT EXISTS idx_families_archived_created ON families(archived, created_at);`,
+
+		// v4: Push notification subscriptions
+		`CREATE TABLE push_subscriptions (
+			family_id TEXT NOT NULL REFERENCES families(id),
+			token TEXT NOT NULL,
+			endpoint TEXT NOT NULL UNIQUE,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX idx_push_family ON push_subscriptions(family_id);`,
 	}
 
 	for i, m := range migrations {

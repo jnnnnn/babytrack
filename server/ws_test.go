@@ -48,7 +48,7 @@ func TestWebSocketConnection(t *testing.T) {
 	family, _ := db.CreateFamily("Test Baby", "")
 	link, _ := db.CreateAccessLink(family.ID, "Test Client", nil)
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
@@ -99,7 +99,7 @@ func TestWebSocketEntrySync(t *testing.T) {
 	link1, _ := db.CreateAccessLink(family.ID, "Client 1", nil)
 	link2, _ := db.CreateAccessLink(family.ID, "Client 2", nil)
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
 	defer server.Close()
@@ -163,7 +163,7 @@ func TestWebSocketUnauthorized(t *testing.T) {
 	}
 	defer db.Close()
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	// Test without cookie
 	req := httptest.NewRequest("GET", "/ws", nil)
@@ -193,7 +193,7 @@ func TestHubBroadcast(t *testing.T) {
 	}
 	defer db.Close()
 
-	hub := NewHub(db)
+	hub := NewHub(db, nil)
 
 	// Create mock clients
 	client1 := &Client{
@@ -303,7 +303,7 @@ func TestDeleteEntrySync(t *testing.T) {
 	link1, _ := db.CreateAccessLink(family.ID, "Client 1", nil)
 	link2, _ := db.CreateAccessLink(family.ID, "Client 2", nil)
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
 	defer server.Close()
@@ -448,7 +448,7 @@ func TestDeletedEntrySyncToNewClient(t *testing.T) {
 	db.UpsertEntry(entry)
 	db.DeleteEntry(family.ID, "already-deleted")
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
 	defer server.Close()
@@ -530,7 +530,7 @@ func TestSyncDeletedEntryBroadcast(t *testing.T) {
 	link1, _ := db.CreateAccessLink(family.ID, "Client 1", nil)
 	link2, _ := db.CreateAccessLink(family.ID, "Client 2", nil)
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
 	defer server.Close()
@@ -629,7 +629,7 @@ func TestEntryAck(t *testing.T) {
 	family, _ := db.CreateFamily("Test Baby", "")
 	link, _ := db.CreateAccessLink(family.ID, "Client", nil)
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
 	defer server.Close()
@@ -697,7 +697,7 @@ func TestSyncRequest(t *testing.T) {
 		db.UpsertEntry(e)
 	}
 
-	s := &Server{db: db, hub: NewHub(db)}
+	s := &Server{db: db, hub: NewHub(db, nil)}
 
 	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocket))
 	defer server.Close()

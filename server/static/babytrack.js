@@ -1328,6 +1328,8 @@ function createButtonRow(groupIndex, btnIndex, btn) {
                onchange="updateConfigButton(${groupIndex}, ${btnIndex}, 'label', this.value)">
         <button class="config-toggle-btn ${btn.countDaily ? 'active' : ''}" 
                 onclick="toggleButtonFlag(${groupIndex}, ${btnIndex}, 'countDaily', this)">📊</button>
+        <button class="config-toggle-btn notify-btn ${btn.notify ? 'active' : ''}" 
+                onclick="toggleButtonFlag(${groupIndex}, ${btnIndex}, 'notify', this)">🔔</button>
         <button class="remove-btn" onclick="removeButton(${groupIndex}, ${btnIndex})">×</button>
       `;
   return row;
@@ -1356,6 +1358,7 @@ function addButtonToGroup(groupIndex) {
     value: 'new',
     label: 'New',
     emoji: '⭐',
+    notify: false,
   });
   openConfigModal(); // Refresh
 }
@@ -1452,6 +1455,19 @@ function initWebSocketSync() {
     },
     onError: (err) => {
       console.error('[WS Sync] Error:', err);
+    },
+    onVapidKey: (key) => {
+      console.log('[WS Sync] Received VAPID public key');
+      window._vapidPublicKey = key;
+      initPushNotifications();
+    },
+    onPushSubscribeAck: () => {
+      console.log('[WS Sync] Push subscription confirmed');
+      updatePushButtonState(true);
+    },
+    onPushUnsubscribeAck: () => {
+      console.log('[WS Sync] Push unsubscription confirmed');
+      updatePushButtonState(false);
     }
   });
 
@@ -1470,11 +1486,71 @@ function updateWsSyncIndicator(status) {
 // Update presence indicator (console only)
 function updatePresenceIndicator(members) {
   if (members.length > 0) {
-    console.log('[Presence] 👥 Online:', members.join(', '));
+    console.log('[Presence] Members online:', members.join(', '));
   }
 }
 
-// Merge remote entries into local IndexedDB
+// ==================== Push Notifications ====================
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function initPushNotifications() {
+  const btn = document.getElementById('push-btn');
+  if (!btn || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+
+  btn.style.display = 'block';
+
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.getSubscription();
+  updatePushButtonState(!!subscription);
+}
+
+function updatePushButtonState(subscribed) {
+  const btn = document.getElementById('push-btn');
+  if (!btn) return;
+  if (subscribed) {
+    btn.textContent = '🔔';
+    btn.style.opacity = '1';
+    btn.title = 'Notifications: ON (click to disable)';
+  } else {
+    btn.textContent = '🔕';
+    btn.style.opacity = '0.5';
+    btn.title = 'Notifications: OFF (click to enable)';
+  }
+}
+
+async function togglePushNotifications() {
+  if (!window._vapidPublicKey || !window.syncClient) return;
+
+  const registration = await navigator.serviceWorker.ready;
+  let subscription = await registration.pushManager.getSubscription();
+
+  if (subscription) {
+    await subscription.unsubscribe();
+    window.syncClient.pushUnsubscribe();
+  } else {
+    try {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(window._vapidPublicKey)
+      });
+      window.syncClient.pushSubscribe(subscription);
+    } catch (err) {
+      console.error('[Push] Subscribe failed:', err);
+    }
+  }
+}
+
+// ==================== Merge Remote Entries ====================
 // Optimized to use syncId index instead of getAll() for each entry
 async function mergeRemoteEntries(remoteEntries) {
   if (!db) await initDB();

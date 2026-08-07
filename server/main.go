@@ -14,11 +14,12 @@ import (
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 type Server struct {
-	db  *DB
-	hub *Hub
+	db   *DB
+	hub  *Hub
+	push *pushManager
 }
 
 func main() {
@@ -41,7 +42,6 @@ func main() {
 	}
 	defer db.Close()
 
-	// Bootstrap admin if configured
 	adminUser := os.Getenv("ADMIN_USER")
 	adminPass := os.Getenv("ADMIN_PASS")
 	if adminUser != "" && adminPass != "" {
@@ -51,10 +51,18 @@ func main() {
 		}
 	}
 
-	s := &Server{db: db, hub: NewHub(db)}
+	push, err := newPushManager(
+		os.Getenv("VAPID_PRIVATE_KEY"),
+		os.Getenv("VAPID_PUBLIC_KEY"),
+	)
+	if err != nil {
+		slog.Error("failed to initialize push manager", "error", err)
+		os.Exit(1)
+	}
+
+	s := &Server{db: db, hub: NewHub(db, push), push: push}
 	mux := http.NewServeMux()
 
-	// Static files
 	mux.HandleFunc("GET /admin", serveFile("admin.html"))
 	mux.HandleFunc("GET /", serveFile("babytrack.html"))
 	mux.HandleFunc("GET /babytrack.css", serveFile("babytrack.css"))
@@ -66,17 +74,14 @@ func main() {
 	mux.HandleFunc("GET /icon-512.png", serveFile("icon-512.png"))
 	mux.HandleFunc("GET /sitemap.html", serveFile("sitemap.html"))
 
-	// Public
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("POST /log", handleClientLog)
 	mux.HandleFunc("GET /t/{token}", s.handleClientToken)
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
-	// Admin auth
 	mux.HandleFunc("POST /admin/login", s.adminLogin)
 	mux.HandleFunc("POST /admin/logout", s.adminLogout)
 
-	// Admin API (protected)
 	mux.HandleFunc("GET /admin/families", s.adminRequired(s.listFamilies))
 	mux.HandleFunc("POST /admin/families", s.adminRequired(s.createFamily))
 	mux.HandleFunc("GET /admin/families/{id}", s.adminRequired(s.getFamily))
@@ -86,7 +91,6 @@ func main() {
 	mux.HandleFunc("POST /admin/families/{id}/links", s.adminRequired(s.createAccessLink))
 	mux.HandleFunc("DELETE /admin/families/{id}/links/{token}", s.adminRequired(s.deleteAccessLink))
 
-	// Add session validation route
 	mux.HandleFunc("GET /admin/session", s.validateSession)
 
 	slog.Info("babytrackd starting", "version", version, "port", port)

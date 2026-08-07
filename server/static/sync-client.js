@@ -37,6 +37,9 @@ class SyncClient {
     this.onPresence = options.onPresence || (() => {});
     this.onInit = options.onInit || (() => {});
     this.onError = options.onError || (() => {});
+    this.onPushSubscribeAck = options.onPushSubscribeAck || (() => {});
+    this.onPushUnsubscribeAck = options.onPushUnsubscribeAck || (() => {});
+    this.onVapidKey = options.onVapidKey || (() => {});
     
     // Cursor (seq) for incremental sync - highest seq received from server
     this.cursor = parseInt(localStorage.getItem('sync-cursor') || '0', 10);
@@ -166,7 +169,12 @@ class SyncClient {
           this.handleSyncResponse(msg);
           break;
         case 'pong':
-          // Heartbeat response
+          break;
+        case 'push_subscribe_ack':
+          this.onPushSubscribeAck();
+          break;
+        case 'push_unsubscribe_ack':
+          this.onPushUnsubscribeAck();
           break;
         default:
           console.log('[Sync] Unknown message type:', msg.type);
@@ -177,7 +185,11 @@ class SyncClient {
   }
   
   handleInit(msg) {
-    console.log('[Sync] Received init with', msg.entries?.length || 0, 'entries');
+    console.log('[Sync] Received init');
+
+    if (msg.vapid_public_key) {
+      this.onVapidKey(msg.vapid_public_key);
+    }
     
     // Track the highest seq received
     if (msg.entries) {
@@ -354,7 +366,8 @@ class SyncClient {
         value: btn.value,
         label: btn.label,
         emoji: btn.emoji,
-        countDaily: btn.countDaily || false
+        countDaily: btn.countDaily || false,
+        notify: btn.notify || false
       }))
     }));
 
@@ -378,7 +391,38 @@ class SyncClient {
     }
   }
   
-  // Pending queue management
+  // Push notification methods
+  pushSubscribe(subscription) {
+    const msg = {
+      type: 'push_subscribe',
+      data: {
+        endpoint: subscription.endpoint,
+        p256dh: this.arrayBufferToBase64(subscription.getKey('p256dh')),
+        auth: this.arrayBufferToBase64(subscription.getKey('auth'))
+      }
+    };
+    if (this.connected && this.ws) {
+      this.safeSend(msg);
+    }
+    localStorage.setItem('push-subscribed', 'true');
+  }
+
+  pushUnsubscribe() {
+    const msg = { type: 'push_unsubscribe' };
+    if (this.connected && this.ws) {
+      this.safeSend(msg);
+    }
+    localStorage.removeItem('push-subscribed');
+  }
+
+  arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
   loadPendingQueue() {
     try {
       const stored = localStorage.getItem('sync-pending-queue');
