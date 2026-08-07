@@ -17,6 +17,8 @@
 - Switched from `mattn/go-sqlite3` (CGO) to `modernc.org/sqlite` (pure Go)
 - Doubled sleep chart canvas height (220px → 440px)
 - Grid lines softened in dark mode
+- Sync: server-push pagination eliminates round trips for large datasets
+- Sync: `init` message no longer sends entries (handled by `sync_request` instead)
 
 ### Fixed
 - Sleep chart canvas rendered at 0×0 when Graphs tab was not initially active

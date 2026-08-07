@@ -96,9 +96,21 @@ localStorage.getItem('sync-cursor')  // e.g., "4523"
     │ SYNC_REQUEST (cursor: 4500)      │
     │ ─────────────────────────────────>
     │                                  │
-    │ SYNC_RESPONSE                    │
+    │ SYNC_RESPONSE (page 1 of N)      │
     │   entries: [{seq:4501}, ...]     │
-    │   cursor: 4523                   │
+    │   cursor: 4700                   │
+    │   has_more: true                 │
+    │ <─────────────────────────────────
+    │                                  │
+    │ SYNC_RESPONSE (page 2 of N)      │
+    │   entries: [{seq:4701}, ...]     │
+    │   cursor: 4900                   │
+    │   has_more: true                 │
+    │ <─────────────────────────────────
+    │          ...                      │
+    │ SYNC_RESPONSE (final page)       │
+    │   entries: [{seq:4901}, ...]     │
+    │   cursor: 5000                   │
     │   has_more: false                │
     │ <─────────────────────────────────
     │                                  │
@@ -121,12 +133,12 @@ localStorage.getItem('sync-cursor')  // e.g., "4523"
 ### Client → Server
 
 #### `sync_request`
-Request entries since cursor.
+Request entries since cursor. Server responds with all pages back-to-back (no client round trips).
 ```json
 {
   "type": "sync_request",
   "cursor": 4500,
-  "limit": 500
+  "limit": 2000
 }
 ```
 

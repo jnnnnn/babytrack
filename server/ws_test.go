@@ -466,12 +466,12 @@ func TestDeletedEntrySyncToNewClient(t *testing.T) {
 
 	// Read init message (skip presence messages)
 	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	var initMsg map[string]any
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			t.Fatalf("failed to read init: %v", err)
 		}
+		var initMsg map[string]any
 		if err := json.Unmarshal(msg, &initMsg); err != nil {
 			t.Fatalf("failed to parse message: %v", err)
 		}
@@ -480,13 +480,35 @@ func TestDeletedEntrySyncToNewClient(t *testing.T) {
 		}
 	}
 
-	// Init should include the deleted entry with deleted=true
-	entriesRaw, ok := initMsg["entries"].([]any)
+	// Send sync_request for entries
+	syncMsg, _ := json.Marshal(map[string]any{
+		"type":   "sync_request",
+		"cursor": 0,
+		"limit":  2000,
+	})
+	conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	if err := conn.WriteMessage(websocket.TextMessage, syncMsg); err != nil {
+		t.Fatalf("failed to send sync_request: %v", err)
+	}
+
+	// Read sync_response
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read sync_response: %v", err)
+	}
+
+	var syncResp map[string]any
+	if err := json.Unmarshal(msg, &syncResp); err != nil {
+		t.Fatalf("failed to parse sync_response: %v", err)
+	}
+
+	entriesRaw, ok := syncResp["entries"].([]any)
 	if !ok {
-		t.Fatalf("expected entries array in init, got %T", initMsg["entries"])
+		t.Fatalf("expected entries array in sync_response, got %T", syncResp["entries"])
 	}
 	if len(entriesRaw) != 1 {
-		t.Fatalf("expected 1 entry in init, got %d", len(entriesRaw))
+		t.Fatalf("expected 1 entry in sync_response, got %d", len(entriesRaw))
 	}
 
 	entryData := entriesRaw[0].(map[string]any)

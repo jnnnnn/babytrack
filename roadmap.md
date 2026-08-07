@@ -9,6 +9,7 @@
 - [x] Canvas redraw on tab switch
 - [x] PWA (manifest, service worker, offline caching)
 - [x] HTTPS self-signed cert for local phone testing
+- [x] Server-push sync pagination (single round trip regardless of data size)
 
 ## Next
 - [ ] Push notifications (multi-carer event alerts)

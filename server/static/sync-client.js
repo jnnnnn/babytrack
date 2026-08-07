@@ -268,31 +268,24 @@ class SyncClient {
   }
   
   handleSyncResponse(msg) {
-    // New cursor-based sync response
+    // Server pushes all pages, no client round trips needed
     console.log('[Sync] Received sync_response:', msg.entries?.length || 0, 'entries, has_more:', msg.has_more);
     
     if (msg.entries) {
       for (const entry of msg.entries) {
-        // Use appropriate action based on deleted flag
         const action = entry.deleted ? 'delete' : 'add';
         this.onEntry(action, entry);
-        // Remove from pending if server already has it
         this.pendingEntries.delete(entry.id);
       }
     }
     
-    // Update cursor from response
     if (msg.cursor > this.cursor) {
       this.cursor = msg.cursor;
       this.saveCursor();
     }
     this.savePendingQueue();
     
-    // If more data available, request next page
-    if (msg.has_more) {
-      this.sendSyncRequest();
-    } else {
-      // Sync complete, now flush pending queue
+    if (!msg.has_more) {
       console.log('[Sync] Initial sync complete, flushing pending queue');
       this.flushPendingQueue();
     }
@@ -305,7 +298,7 @@ class SyncClient {
     this.safeSend({
       type: 'sync_request',
       cursor: this.cursor,
-      limit: 500
+      limit: 2000
     });
   }
   

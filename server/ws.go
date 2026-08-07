@@ -163,13 +163,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sendInit(c *Client) {
-	entries, _ := s.db.GetEntries(c.familyID, 0)
 	config, _ := s.db.GetConfig(c.familyID)
 
 	msg, _ := json.Marshal(map[string]any{
-		"type":    "init",
-		"entries": entries,
-		"config":  config,
+		"type":   "init",
+		"config": config,
 	})
 	c.send <- msg
 }
@@ -326,24 +324,36 @@ func (s *Server) handleSyncMessage(c *Client, msg WSMessage) {
 		}
 	}
 
-	// Use cursor-based sync with GetEntriesSinceCursor
-	entries, hasMore, err := s.db.GetEntriesSinceCursor(c.familyID, msg.Cursor, msg.Limit)
-	if err != nil {
-		slog.Error("failed to get entries for sync", "error", err, "family_id", c.familyID)
-		return
+	// Server-push pagination: send all pages immediately, no client round trips
+	cursor := msg.Cursor
+	limit := msg.Limit
+	if limit <= 0 {
+		limit = 2000
 	}
 
-	// Compute new cursor from highest seq in response
-	newCursor := msg.Cursor
-	if len(entries) > 0 {
-		newCursor = entries[len(entries)-1].Seq
-	}
+	for {
+		entries, hasMore, err := s.db.GetEntriesSinceCursor(c.familyID, cursor, limit)
+		if err != nil {
+			slog.Error("failed to get entries for sync", "error", err, "family_id", c.familyID)
+			return
+		}
 
-	resp, _ := json.Marshal(map[string]any{
-		"type":     "sync_response",
-		"entries":  entries,
-		"cursor":   newCursor,
-		"has_more": hasMore,
-	})
-	c.send <- resp
+		newCursor := cursor
+		if len(entries) > 0 {
+			newCursor = entries[len(entries)-1].Seq
+		}
+
+		resp, _ := json.Marshal(map[string]any{
+			"type":     "sync_response",
+			"entries":  entries,
+			"cursor":   newCursor,
+			"has_more": hasMore,
+		})
+		c.send <- resp
+
+		if !hasMore {
+			break
+		}
+		cursor = newCursor
+	}
 }
