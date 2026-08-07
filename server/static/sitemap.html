@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BabyTrack Sitemap</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.5rem; }
+    ul { line-height: 1.8; }
+    code { background: #eee; padding: 1px 6px; border-radius: 3px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>BabyTrack Sitemap</h1>
+  <ul>
+    <li><code>/</code> — Main tracking page (client/carer view)</li>
+    <li><code>/admin</code> — Admin dashboard (consultant: families, links, summaries)</li>
+    <li><code>/admin#login</code> — Admin login form</li>
+    <li><code>/admin#dashboard</code> — Admin family list with daily stats</li>
+    <li><code>/admin#family/{id}</code> — Family detail: CRUD, access links, date-picked summary</li>
+    <li><code>/t/{token}</code> — Magic link redirect (sets token cookie, redirects to <code>/</code>)</li>
+    <li><code>/ws</code> — WebSocket endpoint (sync protocol)</li>
+    <li><code>/health</code> — Health check (<code>{"ok":true,"version":"0.2.0"}</code>)</li>
+    <li><code>/log</code> — Client error log receiver (<code>POST</code>)</li>
+    <li><code>/manifest.json</code> — PWA web app manifest</li>
+    <li><code>/sw.js</code> — Service worker (offline cache)</li>
+    <li><code>/icon-192.png</code>, <code>/icon-512.png</code> — PWA app icons</li>
+  </ul>
+  <h3>Admin API (cookie-protected)</h3>
+  <ul>
+    <li><code>POST /admin/login</code>, <code>POST /admin/logout</code></li>
+    <li><code>GET /admin/session</code> — Validate current session</li>
+    <li><code>GET /admin/families</code>, <code>POST /admin/families</code></li>
+    <li><code>GET /admin/families/{id}</code>, <code>PATCH /admin/families/{id}</code></li>
+    <li><code>GET /admin/families/{id}/summary</code> — Daily summary with sleep stats</li>
+    <li><code>GET /admin/families/{id}/links</code>, <code>POST /admin/families/{id}/links</code></li>
+    <li><code>DELETE /admin/families/{id}/links/{token}</code></li>
+  </ul>
+</body>
+</html>

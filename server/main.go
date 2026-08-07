@@ -64,6 +64,7 @@ func main() {
 	mux.HandleFunc("GET /sw.js", serveFile("sw.js"))
 	mux.HandleFunc("GET /icon-192.png", serveFile("icon-192.png"))
 	mux.HandleFunc("GET /icon-512.png", serveFile("icon-512.png"))
+	mux.HandleFunc("GET /sitemap.html", serveFile("sitemap.html"))
 
 	// Public
 	mux.HandleFunc("GET /health", healthHandler)
